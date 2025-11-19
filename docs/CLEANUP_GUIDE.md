@@ -1,39 +1,51 @@
-# APM VPN Solution Cleanup Guide
+# APM Solution Cleanup Guide
 
-Guide for safely removing F5 BIG-IP APM VPN configurations using the delete playbook.
+Guide for safely removing F5 BIG-IP APM configurations using the delete playbook.
 
 ## Overview
 
-The `delete_apm_vpn.yml` playbook provides a safe, automated way to remove all APM VPN solution components from BIG-IP devices.
+The `delete_apm_vpn.yml` playbook provides a safe, automated way to remove all APM solution components from BIG-IP devices. It supports both Solution 1 (VPN) and Solution 2 (Portal Access).
 
-**Source:** Converted from [solution1-delete Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution1/postman/solution1-delete.postman_collection.json)
+**Sources:**
+- [solution1-delete Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution1/postman/solution1-delete.postman_collection.json)
+- [solution2-delete Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution2/postman/solution2-delete.postman_collection.json)
 
 ## What Gets Deleted
 
-### Core APM Objects
-- Access Profile (`/Common/solution1-psp`)
-- Access Policy (`/Common/solution1-psp`)
-- All policy items (Start, Logon Page, AD Auth, Resource Assign, Allow, Deny)
-- All agents (logon page, AD auth, resource assign, deny, allow)
+### Core APM Objects (Both Solutions)
+- Access Profile (`/Common/<solution>-psp`)
+- Access Policy (`/Common/<solution>-psp`)
+- All policy items (Start, Logon Page, AD Auth, Resource Assign/AD Group Mapping, Allow, Deny)
+- All agents (logon page, AD auth, resource assign, AD query, deny, allow)
 - All customization groups
 
-### VPN Configuration
+### Solution 1: VPN Configuration
 - Connectivity Profile (`/Common/solution1-cp`)
 - VPN Tunnel (`/Common/solution1-tunnel`)
 - Network Access Resource (`/Common/solution1-vpn`)
 - IP Lease Pool (`/Common/solution1-vpn_pool`)
 
-### User Interface
-- Webtop (`/Common/solution1-webtop`)
-- Webtop Section (`/Common/solution1-network_access`)
+### Solution 2: Portal Access Configuration
+- Portal Access Resources:
+  - `/Common/solution2-server1` (server1.acme.com)
+  - `/Common/solution2-server2` (server2.acme.com)
+  - `/Common/solution2-server3` (server3.acme.com)
+  - `/Common/solution2-server4` (server4.acme.com)
+- Portal Customization Groups (one per resource)
+- Network Access Resource (optional, if VPN enabled)
+- IP Lease Pool (optional, if VPN enabled)
 
-### Authentication
-- AAA AD Server (`/Common/solution1-ad-servers`)
-- AD Server Pool (`/Common/solution1-ad-pool`)
+### User Interface (Both Solutions)
+- Webtop (`/Common/<solution>-webtop`)
+- Webtop Section (`/Common/<solution>-network_access`)
+
+### Authentication (Both Solutions)
+- AAA AD Server (`/Common/<solution>-ad-servers`)
+- AD Server Pool (`/Common/<solution>-ad-pool`)
 - AD Server Node (`10.1.20.7`)
 
 ### Application (if AS3 used)
-- Entire Partition (`solution1`)
+- Entire Partition (`solution1` or `solution2`)
 - Virtual Server
 - Pool members
 - Profiles
@@ -50,16 +62,17 @@ The playbook deletes objects in this specific order to avoid dependency conflict
 1. **External DNS/GSLB** - WideIP and GTM objects
 2. **AS3 Application** - Partition with VS and pools
 3. **Access Profile** - Must be deleted before policy
-4. **Access Policy** - Deletes all items and agents
-5. **Connectivity Profile** - VPN connectivity settings
-6. **VPN Tunnel** - Network tunnel
+4. **Access Policy** - Deletes all items and agents (including AD group mapping for Solution 2)
+5. **Connectivity Profile** - VPN connectivity settings (Solution 1, optional in Solution 2)
+6. **VPN Tunnel** - Network tunnel (Solution 1, optional in Solution 2)
 7. **AAA AD Server** - Authentication server
 8. **AD Pool** - Server pool
 9. **AD Node** - Network node
 10. **Webtop** - Portal interface
-11. **Network Access** - VPN resource
-12. **IP Lease Pool** - IP address pool
-13. **Webtop Section** - Portal section
+11. **Webtop Section** - Portal section
+12. **Portal Access Resources** - Web application resources (Solution 2 only, 4 resources)
+13. **Network Access** - VPN resource (Solution 1, optional in Solution 2)
+14. **IP Lease Pool** - IP address pool (Solution 1, optional in Solution 2)
 
 ## Safety Features
 
@@ -91,7 +104,7 @@ You must type exactly `DELETE` to proceed.
 
 ## Usage
 
-### Basic Deletion
+### Delete Solution 1 (VPN)
 
 ```bash
 ansible-playbook delete_apm_vpn.yml
@@ -99,12 +112,46 @@ ansible-playbook delete_apm_vpn.yml
 
 **You will see:**
 ```
-WARNING: APM VPN Solution Deletion
+WARNING: APM Solution Deletion
 This will DELETE all components for: solution1
 
 Components to be removed:
 - Access Profile: /Common/solution1-psp
 - Access Policy: /Common/solution1-psp
+- Connectivity Profile: /Common/solution1-cp
+- Network Access: /Common/solution1-vpn
+- ... [full list] ...
+
+This action CANNOT be undone!
+
+Type 'DELETE' to confirm deletion (Ctrl+C to cancel):
+```
+
+### Delete Solution 2 (Portal)
+
+To delete Solution 2 with portal resources, you need to load solution2.yml variables:
+
+```bash
+# Method 1: Load vars file explicitly
+ansible-playbook delete_apm_vpn.yml -e "@vars/solution2.yml"
+
+# Method 2: Override solution name only (simpler)
+ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2"
+```
+
+**Note:** Method 2 works if you just need to delete by name, but Method 1 ensures portal_resources variable is loaded for proper deletion confirmation.
+
+**You will see:**
+```
+WARNING: APM Solution Deletion
+This will DELETE all components for: solution2
+
+Components to be removed:
+- Access Profile: /Common/solution2-psp
+- Access Policy: /Common/solution2-psp
+- Portal Resources: 4 web applications
+- Webtop: /Common/solution2-webtop
+- Network Access: /Common/solution2-vpn (if configured)
 - ... [full list] ...
 
 This action CANNOT be undone!
@@ -117,7 +164,11 @@ Type 'DELETE' to confirm deletion (Ctrl+C to cancel):
 For automation/CI-CD pipelines only:
 
 ```bash
+# Solution 1
 ansible-playbook delete_apm_vpn.yml -e "confirm_delete=true"
+
+# Solution 2
+ansible-playbook delete_apm_vpn.yml -e "@vars/solution2.yml" -e "confirm_delete=true"
 ```
 
 **WARNING:** This skips the confirmation prompt entirely. Use with extreme caution!
@@ -155,16 +206,25 @@ ssh admin@10.1.1.4
 # Create UCS backup
 tmsh save sys ucs before-delete-$(date +%Y%m%d-%H%M%S).ucs
 
-# List existing objects
+# List existing objects - Solution 1
 tmsh list apm profile access solution1-psp
 tmsh list apm resource network-access solution1-vpn
 tmsh list apm resource webtop solution1-webtop
+
+# List existing objects - Solution 2
+tmsh list apm profile access solution2-psp
+tmsh list apm resource portal-access solution2-server1
+tmsh list apm resource portal-access solution2-server2
+tmsh list apm resource portal-access solution2-server3
+tmsh list apm resource portal-access solution2-server4
+tmsh list apm resource webtop solution2-webtop
 ```
 
 ### After Deletion
 
 Verify objects are gone:
 
+**Solution 1:**
 ```bash
 # Check access profile (should return error)
 tmsh list apm profile access solution1-psp
@@ -174,7 +234,32 @@ tmsh list apm profile access solution1-psp
 tmsh list sys folder solution1
 # Error: 01020036:3: The requested folder (solution1) was not found.
 
-# Check AD node
+# Check network access
+tmsh list apm resource network-access solution1-vpn
+# Error: 01020036:3: The requested network-access (solution1-vpn) was not found.
+```
+
+**Solution 2:**
+```bash
+# Check access profile (should return error)
+tmsh list apm profile access solution2-psp
+# Error: 01020036:3: The requested Access Profile (/Common/solution2-psp) was not found.
+
+# Check portal resources (should all return errors)
+tmsh list apm resource portal-access solution2-server1
+# Error: 01020036:3: The requested portal-access (solution2-server1) was not found.
+
+tmsh list apm resource portal-access solution2-server2
+# Error: 01020036:3: The requested portal-access (solution2-server2) was not found.
+
+# Check partition (if AS3 used)
+tmsh list sys folder solution2
+# Error: 01020036:3: The requested folder (solution2) was not found.
+```
+
+**Both Solutions:**
+```bash
+# Check AD node (shared)
 tmsh list ltm node 10.1.20.7
 # Error: 01020036:3: The requested node (10.1.20.7) was not found.
 ```
@@ -355,7 +440,7 @@ tmsh delete apm policy customization-group /Common/solution1-psp_eps
 
 If the playbook fails or for manual cleanup:
 
-### Quick Delete (TMSH)
+### Solution 1: Quick Delete (TMSH)
 
 ```bash
 # SSH to BIG-IP
@@ -394,6 +479,53 @@ tmsh delete ltm node 10.1.20.7
 # Delete AS3 application (if used)
 curl -k -u admin:admin -X DELETE \
   https://10.1.1.4/mgmt/shared/appsvcs/declare/solution1
+
+# Save configuration
+tmsh save sys config
+```
+
+### Solution 2: Quick Delete (TMSH)
+
+```bash
+# SSH to BIG-IP
+ssh admin@10.1.1.4
+
+# Delete profile (deletes policy too)
+tmsh delete apm profile access /Common/solution2-psp
+
+# Delete portal access resources
+tmsh delete apm resource portal-access /Common/solution2-server1
+tmsh delete apm resource portal-access /Common/solution2-server2
+tmsh delete apm resource portal-access /Common/solution2-server3
+tmsh delete apm resource portal-access /Common/solution2-server4
+
+# Delete network access (if configured)
+tmsh delete apm resource network-access /Common/solution2-vpn
+
+# Delete webtop
+tmsh delete apm resource webtop /Common/solution2-webtop
+
+# Delete webtop section
+tmsh delete apm resource webtop-section /Common/solution2-network_access
+
+# Delete lease pool (if configured)
+tmsh delete apm resource leasepool /Common/solution2-vpn_pool
+
+# Delete tunnel (if configured)
+tmsh delete net tunnels tunnel /Common/solution2-tunnel
+
+# Delete AD AAA server
+tmsh delete apm aaa active-directory /Common/solution2-ad-servers
+
+# Delete AD pool
+tmsh delete ltm pool /Common/solution2-ad-pool
+
+# Delete AD node
+tmsh delete ltm node 10.1.20.7
+
+# Delete AS3 application (if used)
+curl -k -u admin:admin -X DELETE \
+  https://10.1.1.4/mgmt/shared/appsvcs/declare/solution2
 
 # Save configuration
 tmsh save sys config

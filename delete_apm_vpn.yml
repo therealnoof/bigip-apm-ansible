@@ -1,15 +1,19 @@
 ---
 ###############################################
-# F5 BIG-IP APM VPN Solution Cleanup/Delete
+# F5 BIG-IP APM Solution Cleanup/Delete
 #
-# Purpose: Remove all APM VPN solution components
-# Based on: solution1-delete Postman collection
+# Purpose: Remove all APM solution components
+# Based on: solution1-delete and solution2-delete Postman collections
+#
+# Supports:
+#  - Solution 1: VPN with Network Access
+#  - Solution 2: Portal Access with AD Group Mapping
 #
 # IMPORTANT: This playbook deletes all configured objects
 # Use with caution - this action cannot be undone
 ###############################################
 
-- name: Delete F5 BIG-IP APM VPN Solution
+- name: Delete F5 BIG-IP APM Solution
   hosts: bigip
   gather_facts: no
   connection: local
@@ -26,7 +30,7 @@
       debug:
         msg: |
           ============================================
-          WARNING: APM VPN Solution Deletion
+          WARNING: APM Solution Deletion
           ============================================
           This will DELETE all components for: {{ vs1_name }}
 
@@ -35,9 +39,18 @@
           - AS3 Application: {{ partition_name }}
           - Access Profile: /Common/{{ vs1_name }}-psp
           - Access Policy: /Common/{{ vs1_name }}-psp
+          {% if create_connectivity_profile | default(false) %}
           - Connectivity Profile: /Common/{{ vs1_name }}-cp
+          {% endif %}
+          {% if create_network_access | default(false) %}
           - Network Access: /Common/{{ vs1_name }}-vpn
+          {% endif %}
+          {% if portal_resources is defined and portal_resources | length > 0 %}
+          - Portal Resources: {{ portal_resources | length }} web applications
+          {% endif %}
+          {% if create_webtop | default(false) %}
           - Webtop: /Common/{{ vs1_name }}-webtop
+          {% endif %}
           - AAA AD Server: /Common/{{ vs1_name }}-ad-servers
           - All associated customization groups
           - All policy items and agents
@@ -312,6 +325,30 @@
       when: create_webtop | bool
 
     # ========================================
+    # Portal Access Resources (Solution 2)
+    # ========================================
+
+    - name: Delete portal access resources
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/portal-access/~Common~{{ vs1_name }}-{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      loop: "{{ portal_resources | default([]) }}"
+      register: portal_delete
+      ignore_errors: yes
+      when: portal_resources is defined and portal_resources | length > 0
+
+    - name: Display portal resource deletion results
+      debug:
+        msg: "Portal Resource {{ vs1_name }}-{{ item.item.name }} - {{ 'deleted' if item.status == 200 else 'not found' }}"
+      loop: "{{ portal_delete.results | default([]) }}"
+      when: portal_resources is defined and portal_resources | length > 0
+
+    # ========================================
     # Network Access Resources
     # ========================================
 
@@ -383,6 +420,12 @@
           - Webtop: {{ vs1_name }}-webtop {{ '✓' if webtop_delete.status == 200 else '(not found)' }}
           - Webtop Section: {{ vs1_name }}-network_access {{ '✓' if webtop_section_delete.status == 200 else '(not found)' }}
           {% endif %}
+          {% if portal_resources is defined and portal_resources | length > 0 %}
+          - Portal Access Resources:
+          {% for result in portal_delete.results %}
+            - {{ vs1_name }}-{{ result.item.name }} {{ '✓' if result.status == 200 else '(not found)' }}
+          {% endfor %}
+          {% endif %}
           {% if create_network_access %}
           - Network Access: {{ vs1_name }}-vpn {{ '✓' if network_access_delete.status == 200 else '(not found)' }}
           - IP Lease Pool: {{ vs1_name }}-vpn_pool {{ '✓' if lease_pool_delete.status == 200 else '(not found)' }}
@@ -391,5 +434,5 @@
           Note: Policy items, agents, and customization groups
                 are automatically deleted with the policy/profile.
 
-          The {{ vs1_name }} VPN solution has been removed.
+          The {{ vs1_name }} solution has been removed.
           ============================================
