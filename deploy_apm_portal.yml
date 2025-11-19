@@ -1,0 +1,211 @@
+---
+###############################################
+# F5 BIG-IP APM Portal Access Deployment
+# Solution 2: Portal Access with AD Group-Based Resource Assignment
+###############################################
+#
+# This playbook deploys a complete APM portal access solution with:
+# - Active Directory authentication
+# - Portal access resources (web application proxying)
+# - AD group-based resource assignment
+# - Optional VPN/Network Access
+# - Webtop user portal
+# - Optional AS3 application deployment
+# - Optional GSLB/DNS configuration
+#
+# Source: Converted from solution2-create Postman collection
+# https://github.com/f5devcentral/access-solutions/blob/master/solution2/postman/solution2-create.postman_collection.json
+#
+# Usage:
+#   ansible-playbook deploy_apm_portal.yml
+#   ansible-playbook deploy_apm_portal.yml --limit bigip-01
+#   ansible-playbook deploy_apm_portal.yml -e "@vars/solution2.yml"
+#
+###############################################
+
+- name: Deploy F5 BIG-IP APM Portal Access Solution
+  hosts: bigip
+  gather_facts: no
+  vars_files:
+    - vars/main.yml
+    - vars/solution2.yml
+
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          ============================================
+          APM Portal Access Solution Deployment
+          ============================================
+
+          Solution Name: {{ vs1_name }}
+          DNS Name: {{ dns1_name }}
+          Customization Type: {{ custom_type }}
+
+          Components to Deploy:
+          - Active Directory Authentication
+          - Portal Access Resources ({{ portal_resources | length }} apps)
+          - AD Group-Based Resource Assignment
+          {% if create_network_access | default(false) %}
+          - VPN/Network Access
+          {% endif %}
+          {% if create_webtop | default(false) %}
+          - Webtop User Portal
+          {% endif %}
+          {% if create_as3_application | default(false) %}
+          - AS3 Virtual Server Application
+          {% endif %}
+          {% if create_gslb | default(false) %}
+          - GSLB/DNS Configuration
+          {% endif %}
+
+          Portal Resources:
+          {% for portal in portal_resources %}
+          - {{ portal.name }}: {{ portal.application_uri }}
+          {% endfor %}
+
+          AD Groups Configured: {{ ad_group_resources | length }}
+          ============================================
+
+    ###############################################
+    # Active Directory Configuration
+    ###############################################
+
+    - name: Configure Active Directory Authentication
+      include_tasks: tasks/aaa_ad_servers.yml
+      tags:
+        - ad
+        - auth
+
+    ###############################################
+    # VPN/Network Access (Optional)
+    ###############################################
+
+    - name: Configure VPN Connectivity Profile
+      include_tasks: tasks/connectivity_profile.yml
+      when: create_network_access | default(false)
+      tags:
+        - vpn
+        - connectivity
+
+    - name: Configure Network Access Resources
+      include_tasks: tasks/network_access.yml
+      when: create_network_access | default(false)
+      tags:
+        - vpn
+        - network-access
+
+    ###############################################
+    # Portal Access Resources
+    ###############################################
+
+    - name: Create Portal Access Resources
+      include_tasks: tasks/portal_resources.yml
+      when: create_portal_resources | default(false)
+      tags:
+        - portal
+        - resources
+
+    ###############################################
+    # Webtop Configuration
+    ###############################################
+
+    - name: Configure Webtop
+      include_tasks: tasks/webtop.yml
+      when: create_webtop | default(false)
+      tags:
+        - webtop
+
+    ###############################################
+    # Access Policy with AD Group Mapping
+    ###############################################
+
+    - name: Create Access Policy with AD Group Mapping
+      include_tasks: tasks/access_policy_solution2.yml
+      tags:
+        - policy
+        - ad-groups
+
+    ###############################################
+    # Virtual Server via AS3 (Optional)
+    ###############################################
+
+    - name: Deploy AS3 Application
+      include_tasks: tasks/as3_deployment.yml
+      when: create_as3_application | default(false)
+      tags:
+        - as3
+        - virtual-server
+
+    ###############################################
+    # GSLB Configuration (Optional)
+    ###############################################
+
+    - name: Configure GSLB
+      include_tasks: tasks/gslb_configuration.yml
+      when: create_gslb | default(false)
+      tags:
+        - gslb
+        - dns
+
+    ###############################################
+    # Deployment Summary
+    ###############################################
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================
+          Deployment Complete!
+          ============================================
+
+          Solution: {{ vs1_name }}
+          Access URL: https://{{ dns1_name }}
+
+          Portal Resources Deployed:
+          {% for portal in portal_resources %}
+          - {{ portal.caption | default(portal.name) }}: {{ portal.application_uri }}
+          {% endfor %}
+
+          AD Group Mappings:
+          {% for mapping in ad_group_resources %}
+          - {{ mapping.description }}
+            {% if mapping.portal_access_resources is defined %}
+            Portal Resources: {{ mapping.portal_access_resources | join(', ') }}
+            {% endif %}
+            {% if mapping.network_access_resources is defined %}
+            Network Access: {{ mapping.network_access_resources | join(', ') }}
+            {% endif %}
+          {% endfor %}
+
+          Authentication:
+          - AD Domain: {{ ad_aaa_server.domain }}
+          - AD Servers: {{ ad_servers | map(attribute='ip') | join(', ') }}
+
+          {% if create_network_access | default(false) %}
+          VPN Configuration:
+          - IP Pool: {{ vpn_pool.start_ip }} - {{ vpn_pool.end_ip }}
+          - Split Tunneling: {{ 'Enabled' if split_tunneling.enabled else 'Disabled' }}
+          {% endif %}
+
+          {% if create_as3_application | default(false) %}
+          Virtual Server:
+          - IP: {{ as3_vs_ip }}:{{ as3_vs_port }}
+          - Access Profile: /Common/{{ vs1_name }}-psp
+          {% endif %}
+
+          Next Steps:
+          1. Test AD authentication at https://{{ dns1_name }}
+          2. Verify users in different AD groups see appropriate resources
+          3. Test portal access to backend applications
+          {% if create_network_access | default(false) %}
+          4. Test VPN connectivity for authorized groups
+          {% endif %}
+
+          Cleanup:
+          To remove this deployment, run:
+            ansible-playbook delete_apm_vpn.yml -e "vs1_name={{ vs1_name }}"
+
+          ============================================
+      tags:
+        - summary

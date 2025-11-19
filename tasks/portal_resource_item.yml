@@ -1,0 +1,49 @@
+---
+###############################################
+# Create Single Portal Access Resource
+# Called via loop from portal_resources.yml
+###############################################
+
+- name: Create portal customization group for {{ portal.name }}
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-{{ portal.name }}_resource_web_app_customization"
+      partition: "Common"
+      type: "resource-web-app"
+      source: "/Common/resource-web-app_{{ custom_type }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: portal_custom_result
+
+- name: Display portal customization result for {{ portal.name }}
+  debug:
+    msg: "Portal customization group {{ portal.name }} - {{ 'created' if portal_custom_result.status == 200 or portal_custom_result.status == 201 else 'already exists' }}"
+
+- name: Create portal access resource for {{ portal.name }}
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/portal-access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-{{ portal.name }}"
+      partition: "Common"
+      applicationUri: "{{ portal.application_uri }}"
+      caption: "{{ portal.caption | default(portal.name) }}"
+      customizationGroup: "/Common/{{ vs1_name }}-{{ portal.name }}_resource_web_app_customization"
+      description: "Portal access for {{ portal.caption | default(portal.name) }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: portal_resource_result
+
+- name: Display portal resource result for {{ portal.name }}
+  debug:
+    msg: "Portal resource {{ portal.name }} ({{ portal.application_uri }}) - {{ 'created' if portal_resource_result.status == 200 or portal_resource_result.status == 201 else 'already exists' }}"

@@ -1,0 +1,238 @@
+---
+###############################################
+# Solution 2 Variables - Portal Access with AD Group Mapping
+# This solution deploys portal access resources with AD group-based assignment
+###############################################
+
+# Solution name (used as prefix for all objects)
+vs1_name: "solution2"
+
+# DNS and domain configuration
+dns1_name: "solution2.acme.com"
+path_name: "solution2"
+partition_name: "solution2"
+
+# Customization type (modern, standard)
+custom_type: "modern"
+
+# Feature flags
+create_webtop: true
+create_portal_resources: true
+create_network_access: true  # VPN access
+create_as3_application: true
+create_gslb: false
+
+# Portal Access Resources
+# Four web applications with different access URLs
+portal_resources:
+  - name: "server1"
+    application_uri: "https://server1.acme.com"
+    caption: "Server 1"
+    description: "Server 1 Portal Access"
+    css_patching: true
+    flash_patching: true
+    html_patching: true
+    java_patching: false
+    javascript_patching: true
+    link_type: "uri"
+    location_specific: true
+    patching_type: "full-patch"
+    path_match_case: true
+    proxy_port: 0
+    publish_on_webtop: true
+    scheme_patching: true
+    items:
+      - name: "item"
+        client_caching_type: "default"
+        compression_type: "gzip"
+        home_tab: true
+        host: "server1.acme.com"
+        link_type: "uri"
+        log: "none"
+        order: 1
+        paths: "/*"
+        port: 443
+        scheme: "https"
+        session_timeout: true
+        session_update: true
+        subnet: "0.0.0.0/0"
+
+  - name: "server2"
+    application_uri: "https://server2.acme.com"
+    caption: "Server 2"
+    description: "Server 2 Portal Access"
+    css_patching: true
+    flash_patching: true
+    html_patching: true
+    java_patching: false
+    javascript_patching: true
+    link_type: "uri"
+    location_specific: true
+    patching_type: "full-patch"
+    path_match_case: true
+    proxy_port: 0
+    publish_on_webtop: true
+    scheme_patching: true
+    items:
+      - name: "item"
+        client_caching_type: "default"
+        compression_type: "gzip"
+        home_tab: true
+        host: "server2.acme.com"
+        link_type: "uri"
+        log: "none"
+        order: 1
+        paths: "/*"
+        port: 443
+        scheme: "https"
+        session_timeout: true
+        session_update: true
+        subnet: "0.0.0.0/0"
+
+  - name: "server3"
+    application_uri: "https://server3.acme.com"
+    caption: "Server 3"
+    description: "Server 3 Portal Access"
+    css_patching: true
+    flash_patching: true
+    html_patching: true
+    java_patching: false
+    javascript_patching: true
+    link_type: "uri"
+    location_specific: true
+    patching_type: "full-patch"
+    path_match_case: true
+    proxy_port: 0
+    publish_on_webtop: true
+    scheme_patching: true
+    items:
+      - name: "item"
+        client_caching_type: "default"
+        compression_type: "gzip"
+        home_tab: true
+        host: "server3.acme.com"
+        link_type: "uri"
+        log: "none"
+        order: 1
+        paths: "/*"
+        port: 443
+        scheme: "https"
+        session_timeout: true
+        session_update: true
+        subnet: "0.0.0.0/0"
+
+  - name: "server4"
+    application_uri: "https://server4.acme.com"
+    caption: "Server 4"
+    description: "Server 4 Portal Access"
+    css_patching: true
+    flash_patching: true
+    html_patching: true
+    java_patching: false
+    javascript_patching: true
+    link_type: "uri"
+    location_specific: true
+    patching_type: "full-patch"
+    path_match_case: true
+    proxy_port: 0
+    publish_on_webtop: true
+    scheme_patching: true
+    items:
+      - name: "item"
+        client_caching_type: "default"
+        compression_type: "gzip"
+        home_tab: true
+        host: "server4.acme.com"
+        link_type: "uri"
+        log: "none"
+        order: 1
+        paths: "/*"
+        port: 443
+        scheme: "https"
+        session_timeout: true
+        session_update: true
+        subnet: "0.0.0.0/0"
+
+# AD Group Resource Mapping
+# Maps Active Directory groups to portal/network access resources
+ad_group_resources:
+  - expression: 'expr { [string tolower [mcget -decode {session.ad.last.attr.memberOf}]] contains [string tolower "CN=Sales Engineering,CN=Users,DC=f5lab,DC=local"] }'
+    description: "Sales Engineering team - VPN and Server 1 access"
+    network_access_resources:
+      - "/Common/{{ vs1_name }}-vpn"
+    portal_access_resources:
+      - "/Common/{{ vs1_name }}-server1"
+    webtop: "/Common/{{ vs1_name }}-webtop"
+    webtop_sections:
+      - "/Common/{{ vs1_name }}-network_access"
+
+  - expression: 'expr { [string tolower [mcget -decode {session.ad.last.attr.memberOf}]] contains [string tolower "CN=Product Management,CN=Users,DC=f5lab,DC=local"] }'
+    description: "Product Management team - Server 1 and 2 access"
+    portal_access_resources:
+      - "/Common/{{ vs1_name }}-server1"
+      - "/Common/{{ vs1_name }}-server2"
+    webtop: "/Common/{{ vs1_name }}-webtop"
+
+  - expression: 'expr { [string tolower [mcget -decode {session.ad.last.attr.memberOf}]] contains [string tolower "CN=Product Development,CN=Users,DC=f5lab,DC=local"] }'
+    description: "Product Development team - Server 2, 3, and 4 access"
+    portal_access_resources:
+      - "/Common/{{ vs1_name }}-server2"
+      - "/Common/{{ vs1_name }}-server3"
+      - "/Common/{{ vs1_name }}-server4"
+    webtop: "/Common/{{ vs1_name }}-webtop"
+
+  - expression: 'expr { [string tolower [mcget -decode {session.ad.last.attr.memberOf}]] contains [string tolower "CN=IT,CN=Users,DC=f5lab,DC=local"] }'
+    description: "IT team - VPN access only"
+    network_access_resources:
+      - "/Common/{{ vs1_name }}-vpn"
+    webtop: "/Common/{{ vs1_name }}-webtop"
+
+# Active Directory Configuration
+ad_servers:
+  - ip: "10.1.20.7"
+    port: 389
+
+ad_aaa_server:
+  name: "{{ vs1_name }}-ad-servers"
+  domain: "f5lab.local"
+  admin_name: "admin@f5lab.local"
+  admin_password: "admin"
+
+# VPN/Network Access Configuration
+vpn_pool:
+  start_ip: "10.1.30.50"
+  end_ip: "10.1.30.100"
+
+tunnel_config:
+  profile: "ppp"
+  df_bit: "preserve"
+  mtu: 1400
+  tos: "preserve"
+  auto_last_hop: "default"
+
+split_tunneling:
+  enabled: true
+  dns_default_internal: true
+  ipv4_lan_address_space:
+    - "10.1.10.0/24"
+    - "10.1.20.0/24"
+
+# Webtop Configuration
+webtop_config:
+  name: "{{ vs1_name }}-webtop"
+  type: "full"
+  minimize_to_tray: "true"
+
+webtop_sections:
+  - name: "{{ vs1_name }}-network_access"
+    type: "network_access"
+
+# AS3 Virtual Server Configuration
+as3_vs_ip: "10.1.10.110"
+as3_vs_port: 443
+
+# GSLB Configuration (optional)
+gslb_wideip: "{{ dns1_name }}"
+gslb_pool_members:
+  - ip: "10.1.10.110"
+    port: 443

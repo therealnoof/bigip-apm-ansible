@@ -1,0 +1,12 @@
+---
+###############################################
+# Portal Access Resources Configuration
+# Creates web application portal resources
+###############################################
+
+- name: Create portal resources
+  include_tasks: portal_resource_item.yml
+  loop: "{{ portal_resources }}"
+  loop_control:
+    loop_var: portal
+  when: create_portal_resources | default(false)

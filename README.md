@@ -1,11 +1,12 @@
-# F5 BIG-IP APM VPN Solution - Ansible Automation
+# F5 BIG-IP APM Solutions - Ansible Automation
 
-Ansible playbook for deploying a complete F5 BIG-IP Access Policy Manager (APM) VPN solution with Active Directory authentication, converted from Postman REST API collection.
+Ansible playbooks for deploying F5 BIG-IP Access Policy Manager (APM) solutions with Active Directory authentication, converted from Postman REST API collections.
 
 ## Overview
 
-This project automates the deployment of a production-ready APM VPN solution including:
+This project automates the deployment of production-ready APM solutions including:
 
+### Solution 1: VPN with Network Access
 - **Active Directory Authentication** - AAA server configuration
 - **VPN Connectivity** - PPP tunnel with compression
 - **Network Access** - IP lease pool with split tunneling
@@ -14,11 +15,53 @@ This project automates the deployment of a production-ready APM VPN solution inc
 - **Application Deployment** - AS3-based HTTPS virtual server
 - **GSLB** - Optional multi-datacenter DNS configuration
 
-**Source:** Converted from [F5 DevCentral solution1-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution1/postman/solution1-create.postman_collection.json)
+**Source:** [solution1-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution1/postman/solution1-create.postman_collection.json)
+
+### Solution 2: Portal Access with AD Group Mapping
+- **Active Directory Authentication** - AAA server with group query
+- **Portal Access Resources** - Web application proxying (4 backend apps)
+- **AD Group-Based Assignment** - Dynamic resource assignment based on AD group membership
+- **Optional VPN Access** - Network access for specific groups
+- **Webtop** - User portal showing group-specific resources
+- **Access Policy** - Per-session policy with AD group mapping
+- **Application Deployment** - AS3-based HTTPS virtual server
+- **GSLB** - Optional multi-datacenter DNS configuration
+
+**Source:** [solution2-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution2/postman/solution2-create.postman_collection.json)
 
 ## Architecture
 
-### Components Deployed
+### Solution 1: VPN Access Flow
+
+```
+Start → Logon Page → AD Authentication → Resource Assign → Allow
+                            │                    │
+                            ▼ (Failed)           │
+                          Deny                   ▼
+                                        VPN + Webtop Resources
+```
+
+**Resources Assigned:** All authenticated users receive VPN and webtop access
+
+### Solution 2: Portal Access with AD Group Mapping Flow
+
+```
+Start → Logon Page → AD Auth → AD Query → AD Group Mapping → Allow
+                        │          │              │
+                        ▼ (Failed) │              ▼
+                      Deny         │      Dynamic Resource Assignment
+                                   │      Based on AD Group:
+                                   │      - Sales Engineering: server1 + VPN
+                                   │      - Product Management: server1 + server2
+                                   │      - Product Development: server2/3/4
+                                   │      - IT: VPN only
+                                   ▼
+                            Get AD Group Membership
+```
+
+**Resources Assigned:** Users receive different portal applications based on their AD group membership
+
+### Components Architecture (Solution 1)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -67,40 +110,86 @@ This project automates the deployment of a production-ready APM VPN solution inc
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Access Policy Flow
+### Components Architecture (Solution 2)
 
 ```
-Start → Logon Page → AD Authentication → Resource Assign → Allow
-                            │
-                            ▼ (Failed)
-                          Deny
+┌─────────────────────────────────────────────────────────┐
+│ Browser Client                                           │
+└───────────────────┬─────────────────────────────────────┘
+                    │ HTTPS (443)
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ F5 BIG-IP - APM Portal Solution                         │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Virtual Server (HTTPS)                            │  │
+│  │ - Client SSL Profile                             │  │
+│  │ - Access Profile: solution2-psp                  │  │
+│  └──────────────────────────────────────────────────┘  │
+│                         │                                │
+│  ┌──────────────────────┼───────────────────────────┐  │
+│  │ Per-Session Policy   ▼                            │  │
+│  │                                                    │  │
+│  │  Logon → AD Auth → AD Query → AD Group Mapping   │  │
+│  │                      │           │          │     │  │
+│  │                      │ Success   │          │     │  │
+│  │                      ▼           ▼          ▼     │  │
+│  │               Get Groups   Assign Resources      │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Portal Access Resources                           │  │
+│  │ - server1.acme.com (Sales, Prod Mgmt)            │  │
+│  │ - server2.acme.com (Prod Mgmt, Prod Dev)         │  │
+│  │ - server3.acme.com (Prod Dev)                    │  │
+│  │ - server4.acme.com (Prod Dev)                    │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Webtop (Group-Specific Resources)                │  │
+│  │ - Dynamic based on AD group membership           │  │
+│  └──────────────────────────────────────────────────┘  │
+└───────────────────┬─────────────────────────────────────┘
+                    │ AD Queries (with memberOf)
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ Active Directory Server (10.1.20.7)                     │
+│ Groups: Sales Engineering, Product Management,          │
+│         Product Development, IT                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
 
 ```
 bigip-apm-ansible/
-├── README.md                    # This file
-├── QUICKSTART.md                # 5-minute setup guide
-├── ansible.cfg                  # Ansible configuration
-├── inventory.yml                # BIG-IP device inventory
-├── deploy_apm_vpn.yml          # Main deployment playbook
-├── delete_apm_vpn.yml          # Cleanup/deletion playbook
+├── README.md                          # This file
+├── QUICKSTART.md                      # 5-minute setup guide
+├── ansible.cfg                        # Ansible configuration
+├── inventory.yml                      # BIG-IP device inventory
+├── deploy_apm_vpn.yml                # Solution 1: VPN deployment playbook
+├── deploy_apm_portal.yml             # Solution 2: Portal deployment playbook
+├── delete_apm_vpn.yml                # Cleanup/deletion playbook
 ├── vars/
-│   └── main.yml                # Configuration variables
+│   ├── main.yml                      # Solution 1 variables
+│   └── solution2.yml                 # Solution 2 variables
 ├── tasks/
-│   ├── aaa_ad_servers.yml      # AD server configuration
-│   ├── connectivity_profile.yml # VPN tunnel and connectivity
-│   ├── network_access.yml       # Network access resource
-│   ├── webtop.yml              # Webtop configuration
-│   ├── access_policy.yml       # Per-session policy
-│   ├── as3_deployment.yml      # Application deployment
-│   └── gslb_configuration.yml  # DNS/GSLB setup
+│   ├── aaa_ad_servers.yml            # AD server configuration
+│   ├── connectivity_profile.yml       # VPN tunnel and connectivity
+│   ├── network_access.yml             # Network access resource
+│   ├── portal_resources.yml           # Portal access resources (Solution 2)
+│   ├── portal_resource_item.yml       # Single portal resource creation
+│   ├── webtop.yml                    # Webtop configuration
+│   ├── access_policy.yml             # Solution 1 per-session policy
+│   ├── access_policy_solution2.yml    # Solution 2 policy with AD groups
+│   ├── as3_deployment.yml            # Application deployment
+│   └── gslb_configuration.yml        # DNS/GSLB setup
 └── docs/
-    ├── API_MAPPING.md          # Postman to Ansible conversion details
-    ├── CLEANUP_GUIDE.md        # Deletion and cleanup guide
-    ├── solution1-create.postman_collection.json   # Source collection
-    └── solution1-delete.postman_collection.json   # Delete collection
+    ├── API_MAPPING.md                # Postman to Ansible conversion details
+    ├── CLEANUP_GUIDE.md              # Deletion and cleanup guide
+    ├── solution1-create.postman_collection.json   # Solution 1 source
+    ├── solution1-delete.postman_collection.json   # Solution 1 delete
+    └── solution2-create.postman_collection.json   # Solution 2 source
 
 ```
 
@@ -193,49 +282,86 @@ See `vars/main.yml` for all available options.
 
 ## Usage
 
-### Basic Deployment
+### Solution 1: VPN Deployment
 
-Run the playbook to deploy the complete APM VPN solution:
+Deploy the complete APM VPN solution with network access:
 
 ```bash
 ansible-playbook deploy_apm_vpn.yml
 ```
 
-### Target Specific Host
+**Deploys:**
+- Active Directory authentication
+- VPN tunnel with split tunneling
+- Network access resource
+- Webtop with network access section
+- Access profile and policy
+
+### Solution 2: Portal Access Deployment
+
+Deploy the Portal Access solution with AD group-based resource assignment:
 
 ```bash
-ansible-playbook deploy_apm_vpn.yml --limit bigip-01
+ansible-playbook deploy_apm_portal.yml
 ```
 
-### Use Different Inventory
+**Deploys:**
+- Active Directory authentication with group query
+- Portal access resources (4 web applications)
+- AD group-based resource assignment
+- Optional VPN access
+- Webtop with group-specific resources
+- Access profile and policy
 
+### Deployment Options
+
+**Target Specific Host**
+```bash
+ansible-playbook deploy_apm_portal.yml --limit bigip-01
+```
+
+**Use Custom Variables**
+```bash
+ansible-playbook deploy_apm_portal.yml -e "@vars/custom.yml"
+```
+
+**Use Different Inventory**
 ```bash
 ansible-playbook -i custom_inventory.yml deploy_apm_vpn.yml
 ```
 
-### Dry Run (Check Mode)
-
+**Dry Run (Check Mode)**
 ```bash
 ansible-playbook deploy_apm_vpn.yml --check
 ```
 
-### Verbose Output
-
+**Verbose Output**
 ```bash
-ansible-playbook deploy_apm_vpn.yml -v    # verbose
-ansible-playbook deploy_apm_vpn.yml -vv   # more verbose
-ansible-playbook deploy_apm_vpn.yml -vvv  # debug
+ansible-playbook deploy_apm_portal.yml -v    # verbose
+ansible-playbook deploy_apm_portal.yml -vv   # more verbose
+ansible-playbook deploy_apm_portal.yml -vvv  # debug
 ```
 
-### With Vault-Encrypted Credentials
-
+**With Vault-Encrypted Credentials**
 ```bash
 ansible-playbook deploy_apm_vpn.yml --ask-vault-pass
 ```
 
+**Deploy Specific Components (Tags)**
+```bash
+# Solution 2: Deploy only portal resources
+ansible-playbook deploy_apm_portal.yml --tags portal
+
+# Solution 2: Deploy only AD and policy
+ansible-playbook deploy_apm_portal.yml --tags ad,policy
+
+# Solution 1: Deploy only VPN components
+ansible-playbook deploy_apm_vpn.yml --tags vpn
+```
+
 ## Cleanup / Deletion
 
-### Remove APM VPN Solution
+### Remove Solution 1 (VPN)
 
 To safely remove all deployed components:
 
@@ -245,22 +371,43 @@ ansible-playbook delete_apm_vpn.yml
 
 **Interactive confirmation required** - you must type `DELETE` to proceed.
 
+### Remove Solution 2 (Portal)
+
+To remove Solution 2 deployment:
+
+```bash
+ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2"
+```
+
+The delete playbook works for both solutions by specifying the solution name.
+
 ### Skip Confirmation (CI/CD)
 
 ```bash
 ansible-playbook delete_apm_vpn.yml -e "confirm_delete=true"
+ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2" -e "confirm_delete=true"
 ```
 
 **WARNING:** This skips safety prompts. Use only in automation.
 
 ### What Gets Deleted
 
+**Solution 1 (VPN):**
 - All access policy objects (policy, profile, items, agents)
 - Connectivity profile and VPN tunnel
 - Network access resource and IP lease pool
-- Webtop and webtop section
+- Webtop and webtop sections
+- AAA AD server and AD pool
+- AS3 application partition (if deployed)
+
+**Solution 2 (Portal):**
+- All access policy objects (policy, profile, items, agents)
+- Portal access resources (server1, server2, server3, server4)
+- Portal customization groups
+- Network access resource (if deployed)
+- Webtop and webtop sections
 - AAA AD server, pool, and node
-- AS3 application (if deployed)
+- AS3 application partition (if deployed)
 - GSLB configuration (if configured)
 
 See [CLEANUP_GUIDE.md](docs/CLEANUP_GUIDE.md) for detailed cleanup documentation.
