@@ -1,0 +1,117 @@
+---
+###############################################
+# AS3 Application Deployment
+# Deploys VPN application using AS3 declaration
+###############################################
+
+- name: Check scope for existing IP address assignment
+  uri:
+    url: "http://{{ address_mgmt_host }}:{{ address_mgmt_port }}/addr/scope-status?scope={{ bigip_scope }}"
+    method: GET
+    status_code: [200, 404]
+  delegate_to: localhost
+  register: scope_check
+  when: address_mgmt_enabled | bool
+  ignore_errors: yes
+
+- name: Get next available IP address
+  uri:
+    url: "http://{{ address_mgmt_host }}:{{ address_mgmt_port }}/addr/available?scope={{ bigip_scope }}"
+    method: GET
+    status_code: [200]
+  delegate_to: localhost
+  register: available_ip
+  when: address_mgmt_enabled | bool and scope_check.status == 404
+
+- name: Set application IP address (from address management)
+  set_fact:
+    app_vs_address: "{{ available_ip.json.address }}"
+  when: address_mgmt_enabled | bool and available_ip.json is defined
+
+- name: Reserve IP address
+  uri:
+    url: "http://{{ address_mgmt_host }}:{{ address_mgmt_port }}/addr/checkout"
+    method: POST
+    body_format: json
+    body:
+      scope: "{{ bigip_scope }}"
+      address: "{{ app_vs_address }}"
+      name: "{{ vs1_name }}"
+    status_code: [200, 201]
+  delegate_to: localhost
+  when: address_mgmt_enabled | bool and app_vs_address is defined
+
+- name: Deploy application using AS3
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      class: "ADC"
+      action: "deploy"
+      persist: true
+      declaration:
+        class: "ADC"
+        schemaVersion: "3.0.0"
+        id: "{{ partition_name }}"
+        label: "{{ vs1_name }} VPN Application"
+        remark: "APM VPN solution deployed via Ansible"
+        "{{ partition_name }}":
+          class: "Tenant"
+          "{{ path_name }}":
+            class: "Application"
+            template: "https"
+            serviceMain:
+              class: "Service_HTTPS"
+              virtualAddresses:
+                - "{{ app_vs_address | default('0.0.0.0') }}"
+              virtualPort: "{{ app_vs_port }}"
+              profileHTTP:
+                use: "http_profile"
+              profileTCP:
+                use: "tcp_profile"
+              serverTLS:
+                bigip: "/Common/serverssl"
+              clientTLS:
+                bigip: "/Common/clientssl"
+              profileAccess:
+                bigip: "/Common/{{ vs1_name }}-psp"
+              profileConnectivity:
+                bigip: "/Common/{{ vs1_name }}-cp"
+              pool: "{{ vs1_name }}_pool"
+              snat: "auto"
+            "{{ vs1_name }}_pool":
+              class: "Pool"
+              monitors:
+                - "http"
+              members: "{{ app_pool_members | default([]) }}"
+            http_profile:
+              class: "HTTP_Profile"
+              xForwardedFor: true
+            tcp_profile:
+              class: "TCP_Profile"
+              idleTimeout: 1800
+    status_code: [200, 201]
+  delegate_to: localhost
+  register: as3_result
+  when: deploy_application_via_as3 | bool
+
+- name: Display AS3 deployment result
+  debug:
+    msg: "AS3 application deployment {{ 'successful' if as3_result.status == 200 or as3_result.status == 201 else 'failed' }}"
+  when: deploy_application_via_as3 | bool
+
+- name: Display application details
+  debug:
+    msg: |
+      Application Details:
+      - Name: {{ vs1_name }}
+      - Partition: {{ partition_name }}
+      - Virtual Server IP: {{ app_vs_address | default('0.0.0.0') }}:{{ app_vs_port }}
+      - Access Profile: /Common/{{ vs1_name }}-psp
+      - Connectivity Profile: /Common/{{ vs1_name }}-cp
+      - DNS Name: {{ dns1_name }}
+  when: deploy_application_via_as3 | bool

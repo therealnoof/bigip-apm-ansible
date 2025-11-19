@@ -1,0 +1,115 @@
+---
+###############################################
+# F5 BIG-IP APM VPN Solution Deployment
+#
+# Purpose: Deploy complete APM VPN solution with AD authentication
+# Based on: solution1-create Postman collection
+# Components:
+#   - AAA Active Directory authentication
+#   - Connectivity Profile (VPN tunnel)
+#   - Network Access Resource (IP pool, split tunneling)
+#   - Webtop
+#   - Per-Session Access Policy
+#   - AS3 Application Deployment
+#   - GSLB Configuration (optional)
+###############################################
+
+- name: Deploy F5 BIG-IP APM VPN Solution
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/main.yml
+
+  tasks:
+    - name: Display deployment banner
+      debug:
+        msg: |
+          ============================================
+          F5 BIG-IP APM VPN Solution Deployment
+          ============================================
+          Target: {{ ansible_host }}
+          Solution: {{ vs1_name }}
+          DNS Name: {{ dns1_name }}
+          Partition: {{ partition_name }}
+          ============================================
+
+    - name: Verify BIG-IP connectivity
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/info"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200]
+      delegate_to: localhost
+      register: bigip_check
+
+    - name: Display BIG-IP version
+      debug:
+        msg: "BIG-IP connectivity verified - AS3 version: {{ bigip_check.json.version | default('N/A') }}"
+
+    - name: Configure AAA Active Directory servers
+      include_tasks: tasks/aaa_ad_servers.yml
+
+    - name: Configure connectivity profile
+      include_tasks: tasks/connectivity_profile.yml
+      when: create_connectivity_profile | bool
+
+    - name: Configure network access resource
+      include_tasks: tasks/network_access.yml
+      when: create_network_access | bool
+
+    - name: Configure webtop
+      include_tasks: tasks/webtop.yml
+      when: create_webtop | bool
+
+    - name: Create access policy and profile
+      include_tasks: tasks/access_policy.yml
+
+    - name: Deploy application via AS3
+      include_tasks: tasks/as3_deployment.yml
+      when: deploy_application_via_as3 | bool
+
+    - name: Configure external DNS/GSLB
+      include_tasks: tasks/gslb_configuration.yml
+      when: configure_external_dns | bool or gslb_enabled | bool
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================
+          Deployment Complete!
+          ============================================
+
+          VPN Access Details:
+          - URL: https://{{ app_vs_address | default(bigip_mgmt) }}/
+          - DNS Name: {{ dns1_name }}
+          - Access Profile: /Common/{{ vs1_name }}-psp
+
+          Authentication:
+          - Method: Active Directory
+          - Server: {{ ad_server_ip }}
+          - Domain: {{ ad_domain }}
+
+          VPN Configuration:
+          - IP Pool: {{ vpn_lease_pool_start }} - {{ vpn_lease_pool_end }}
+          - Split Tunnel Networks:
+          {% for network in vpn_split_tunnel_networks %}
+            - {{ network }}
+          {% endfor %}
+
+          Network Access:
+          - Resource: /Common/{{ vs1_name }}-vpn
+          - Webtop: /Common/{{ vs1_name }}-webtop
+          - Connectivity Profile: /Common/{{ vs1_name }}-cp
+
+          Next Steps:
+          1. Verify access profile is attached to virtual server
+          2. Test VPN connection using {{ dns1_name }}
+          3. Verify AD authentication
+          4. Test network access and split tunneling
+          5. Review logs at /var/log/apm
+
+          ============================================

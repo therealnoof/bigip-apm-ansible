@@ -1,0 +1,90 @@
+---
+###############################################
+# Network Access Resource Configuration
+###############################################
+
+- name: Create VPN IP lease pool
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/leasepool/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-vpn_pool"
+      partition: "Common"
+      locationSpecific: "true"
+      members:
+        - "{{ vpn_lease_pool_start }}-{{ vpn_lease_pool_end }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: lease_pool_result
+  when: create_network_access | bool
+
+- name: Display lease pool creation result
+  debug:
+    msg: "VPN lease pool {{ vs1_name }}-vpn_pool - {{ 'created' if lease_pool_result.status == 200 or lease_pool_result.status == 201 else 'already exists' }}"
+  when: create_network_access | bool
+
+- name: Create network access customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-vpn_resource_network_access_customization"
+      partition: "Common"
+      type: "resource-network-access"
+      source: "/Common/resource-network-access_{{ custom_type }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: na_custom_result
+  when: create_network_access | bool
+
+- name: Display network access customization result
+  debug:
+    msg: "Network access customization group - {{ 'created' if na_custom_result.status == 200 or na_custom_result.status == 201 else 'already exists' }}"
+  when: create_network_access | bool
+
+- name: Create network access resource
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/network-access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-vpn"
+      partition: "Common"
+      addressSpaceDhcpRequestsExcludeEnabled: "true"
+      addressSpaceExcludeClientDnsServers: "disabled"
+      addressSpaceExcludeClientSubnets: "disabled"
+      addressSpaceExcludeDnsNameServersEnabled: "true"
+      addressSpaceIncludeClientSubnets: "disabled"
+      addressSpaceIncludeDnsNameServersEnabled: "false"
+      addressSpaceIncludeSubnets: "{{ vpn_split_tunnel_networks }}"
+      allowLocalSubnet: "enabled"
+      allowLocalDns: "enabled"
+      clientLeaseDuration: 28800
+      customizationGroup: "/Common/{{ vs1_name }}-vpn_resource_network_access_customization"
+      dtlsEnabled: "true"
+      dtlsPort: 4433
+      ipv4LeasePool: "/Common/{{ vs1_name }}-vpn_pool"
+      ipv6PrimaryDns: "none"
+      ipv6SecondaryDns: "none"
+      splitTunneling: "true"
+      trafficAcceleration: "enabled"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: na_resource_result
+  when: create_network_access | bool
+
+- name: Display network access resource result
+  debug:
+    msg: "Network access resource {{ vs1_name }}-vpn - {{ 'created' if na_resource_result.status == 200 or na_resource_result.status == 201 else 'already exists' }}"
+  when: create_network_access | bool

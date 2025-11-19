@@ -1,0 +1,212 @@
+---
+###############################################
+# GSLB/DNS Configuration (Optional)
+# Configures external DNS with multiple datacenters
+###############################################
+
+- name: Verify DNS appliance connectivity
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/shared/appsvcs/info"
+    method: GET
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    status_code: [200]
+  delegate_to: localhost
+  register: dns_check
+  when: configure_external_dns | bool or gslb_enabled | bool
+
+- name: Create DC1 datacenter
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/datacenter"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ gslb_dc1_name }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: configure_external_dns | bool or gslb_enabled | bool
+
+- name: Create BIG-IP1 server in GTM
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "bigip1.f5lab.local"
+      datacenter: "/Common/{{ gslb_dc1_name }}"
+      addresses:
+        - name: "{{ gslb_bigip1_ip }}"
+          deviceName: "bigip1.f5lab.local"
+      product: "bigip"
+      virtualServerDiscovery: "disabled"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: configure_external_dns | bool or gslb_enabled | bool
+
+- name: Create BIG-IP5 server in GTM
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "bigip5.f5lab.local"
+      datacenter: "/Common/{{ gslb_dc1_name }}"
+      addresses:
+        - name: "{{ gslb_bigip5_ip }}"
+          deviceName: "bigip5.f5lab.local"
+      product: "bigip"
+      virtualServerDiscovery: "disabled"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: configure_external_dns | bool or gslb_enabled | bool
+
+- name: Add application virtual server to BIG-IP1 server
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server/~Common~bigip1.f5lab.local/virtual-servers/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "/{{ partition_name }}/{{ path_name }}/{{ vs1_name }}"
+      destination: "{{ app_vs_address | default('0.0.0.0') }}:{{ app_vs_port }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: configure_external_dns | bool or gslb_enabled | bool
+
+- name: Create WideIP using AS3
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/shared/appsvcs/declare"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      class: "ADC"
+      schemaVersion: "3.6.0"
+      id: "GSLB_{{ partition_name }}"
+      "{{ partition_name }}":
+        class: "Tenant"
+        Application:
+          class: "Application"
+          "{{ vs1_name }}-pool":
+            class: "GSLB_Pool"
+            resourceRecordType: "A"
+            members:
+              - server: "/Common/bigip1.f5lab.local"
+                virtualServer: "/{{ partition_name }}/{{ path_name }}/{{ vs1_name }}"
+            monitors:
+              - bigip: "/Common/http"
+          "{{ vs1_name }}-wideip":
+            class: "GSLB_Domain"
+            domainName: "{{ dns1_name }}"
+            resourceRecordType: "A"
+            pools:
+              - use: "/{{ partition_name }}/Application/{{ vs1_name }}-pool"
+    status_code: [200, 201]
+  delegate_to: localhost
+  register: wideip_result
+  when: configure_external_dns | bool or gslb_enabled | bool
+
+- name: Display WideIP creation result
+  debug:
+    msg: "WideIP {{ dns1_name }} created successfully"
+  when: (configure_external_dns | bool or gslb_enabled | bool) and (wideip_result.status == 200 or wideip_result.status == 201)
+
+# DC2 Configuration (if enabled)
+- name: Check if BIG-IP2 server exists
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server"
+    method: GET
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    status_code: [200]
+  delegate_to: localhost
+  register: existing_servers
+  when: gslb_dc2_enabled | bool
+
+- name: Create DC2 datacenter
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/datacenter"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ gslb_dc2_name }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: gslb_dc2_enabled | bool
+
+- name: Add BIG-IP2 server to GTM
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "bigip2.f5lab.local"
+      datacenter: "/Common/{{ gslb_dc2_name }}"
+      addresses:
+        - name: "{{ gslb_bigip2_ip }}"
+          deviceName: "bigip2.f5lab.local"
+      product: "bigip"
+      virtualServerDiscovery: "disabled"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: gslb_dc2_enabled | bool
+
+- name: Add BIG-IP2 application VS to server
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server/~Common~bigip2.f5lab.local/virtual-servers/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "/{{ partition_name }}/{{ path_name }}/{{ vs1_name }}"
+      destination: "{{ app_vs_address | default('0.0.0.0') }}:{{ app_vs_port }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: gslb_dc2_enabled | bool
+
+- name: Add BIG-IP2 to WideIP pool
+  uri:
+    url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/pool/a/~{{ partition_name }}~Application~{{ vs1_name }}-pool/members"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "bigip2.f5lab.local:/{{ partition_name }}/{{ path_name }}/{{ vs1_name }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  when: gslb_dc2_enabled | bool
+
+- name: Display GSLB configuration complete
+  debug:
+    msg: |
+      GSLB Configuration Complete:
+      - DNS Server: {{ gslb_dns_server }}
+      - Datacenter(s): {{ gslb_dc1_name }}{{ ', ' + gslb_dc2_name if gslb_dc2_enabled else '' }}
+      - WideIP: {{ dns1_name }}
+      - Pool Members: bigip1.f5lab.local{{ ', bigip2.f5lab.local' if gslb_dc2_enabled else '' }}
+  when: configure_external_dns | bool or gslb_enabled | bool

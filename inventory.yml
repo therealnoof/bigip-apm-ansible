@@ -1,0 +1,29 @@
+---
+###############################################
+# F5 BIG-IP Inventory
+###############################################
+
+all:
+  children:
+    bigip:
+      hosts:
+        # Primary BIG-IP for APM deployment
+        bigip-01:
+          ansible_host: 10.1.1.4
+          bigip_user: admin
+          bigip_pass: admin
+
+        # Additional BIG-IP devices (uncomment to use)
+        # bigip-02:
+        #   ansible_host: 10.1.1.5
+        #   bigip_user: admin
+        #   bigip_pass: admin
+
+      vars:
+        # Common variables for all BIG-IP devices
+        ansible_connection: local
+        ansible_python_interpreter: /usr/bin/python3
+
+# Note: Use Ansible Vault to encrypt passwords in production
+# Example:
+#   ansible-vault encrypt_string 'admin' --name 'bigip_pass'

@@ -1,0 +1,78 @@
+---
+###############################################
+# Connectivity Profile Configuration
+###############################################
+
+- name: Create PPP tunnel
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/net/tunnels/tunnel"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-tunnel"
+      partition: "Common"
+      autoLasthop: "default"
+      mode: "bidirectional"
+      profile: "/Common/ppp"
+      usePmtu: "enabled"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: tunnel_result
+  when: create_connectivity_profile | bool
+
+- name: Display tunnel creation result
+  debug:
+    msg: "Tunnel {{ vs1_name }}-tunnel - {{ 'created' if tunnel_result.status == 200 or tunnel_result.status == 201 else 'already exists' }}"
+  when: create_connectivity_profile | bool
+
+- name: Create connectivity profile customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-cp_secure_access_client_customization"
+      partition: "Common"
+      type: "connectivity-profile"
+      source: "/Common/connectivity-profile_{{ custom_type }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: cp_custom_result
+  when: create_connectivity_profile | bool
+
+- name: Display connectivity customization group result
+  debug:
+    msg: "Connectivity customization group - {{ 'created' if cp_custom_result.status == 200 or cp_custom_result.status == 201 else 'already exists' }}"
+  when: create_connectivity_profile | bool
+
+- name: Create connectivity profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/connectivity/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-cp"
+      partition: "Common"
+      adaptiveCompression: "{{ 'enabled' if enable_compression else 'disabled' }}"
+      compression: "{{ 'enabled' if enable_compression else 'disabled' }}"
+      customizationGroup: "/Common/{{ vs1_name }}-cp_secure_access_client_customization"
+      tunnelMode: "bidirectional"
+      tunnelReference: "/Common/{{ vs1_name }}-tunnel"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: cp_profile_result
+  when: create_connectivity_profile | bool
+
+- name: Display connectivity profile result
+  debug:
+    msg: "Connectivity profile {{ vs1_name }}-cp - {{ 'created' if cp_profile_result.status == 200 or cp_profile_result.status == 201 else 'already exists' }}"
+  when: create_connectivity_profile | bool

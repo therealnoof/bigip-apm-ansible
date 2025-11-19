@@ -1,0 +1,75 @@
+---
+###############################################
+# F5 BIG-IP APM VPN Solution Variables
+# Based on: solution1-create Postman collection
+###############################################
+
+# BIG-IP Connection Details
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+bigip_validate_certs: no
+
+# Solution Naming
+vs1_name: "solution1"
+dns1_name: "solution1.acme.com"
+partition_name: "solution1"
+path_name: "solution1"
+custom_type: "modern"
+
+# Active Directory Configuration
+ad_server_ip: "10.1.20.7"
+ad_domain: "f5lab.local"
+ad_admin_user: "admin"
+ad_admin_password: "admin"
+
+# VPN Network Configuration
+vpn_lease_pool_start: "10.1.2.1"
+vpn_lease_pool_end: "10.1.2.254"
+vpn_split_tunnel_networks:
+  - "10.1.10.0/255.255.255.0"
+  - "10.1.20.0/255.255.255.0"
+
+# Address Management API (optional - for dynamic IP allocation)
+address_mgmt_enabled: false
+address_mgmt_host: "10.1.20.6"
+address_mgmt_port: 81
+bigip_scope: "{{ partition_name }}"
+
+# AS3 Application Configuration
+app_vs_port: 443
+app_pool_members: []
+  # - "10.1.20.10:80"
+  # - "10.1.20.11:80"
+
+# SSL Certificate (for AS3 deployment)
+# Use existing certificate or provide new one
+ssl_cert_name: "default.crt"
+ssl_key_name: "default.key"
+
+# GSLB/DNS Configuration
+gslb_enabled: false
+gslb_dns_server: "10.1.1.11"
+gslb_dc1_name: "DC1"
+gslb_dc2_enabled: false
+gslb_dc2_name: "DC2"
+gslb_bigip1_ip: "10.1.1.4"
+gslb_bigip2_ip: "10.1.1.5"
+gslb_bigip5_ip: "10.1.1.11"
+
+# APM Policy Configuration
+apm_timeout_seconds: 900
+apm_max_login_failures: 3
+apm_session_cookie_name: "MRHSession"
+
+# Customization Settings
+use_modern_customization: true
+enable_compression: true
+
+# Feature Flags
+create_connectivity_profile: true
+create_network_access: true
+create_webtop: true
+deploy_application_via_as3: true
+configure_external_dns: false

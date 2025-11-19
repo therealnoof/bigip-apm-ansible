@@ -1,0 +1,68 @@
+---
+###############################################
+# AAA Active Directory Server Configuration
+###############################################
+
+- name: Create AD server node
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ ad_server_ip }}"
+      address: "{{ ad_server_ip }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: ad_node_result
+
+- name: Display AD node creation result
+  debug:
+    msg: "AD node {{ ad_server_ip }} - {{ 'created' if ad_node_result.status == 200 or ad_node_result.status == 201 else 'already exists' }}"
+
+- name: Create AD server pool
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-ad-pool"
+      members:
+        - name: "{{ ad_server_ip }}:0"
+          address: "{{ ad_server_ip }}"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: ad_pool_result
+
+- name: Display AD pool creation result
+  debug:
+    msg: "AD pool {{ vs1_name }}-ad-pool - {{ 'created' if ad_pool_result.status == 200 or ad_pool_result.status == 201 else 'already exists' }}"
+
+- name: Create APM AAA Active Directory server
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-ad-servers"
+      adminEncryptedPassword: "{{ ad_admin_password }}"
+      adminName: "{{ ad_admin_user }}"
+      domain: "{{ ad_domain }}"
+      domainController: "{{ ad_server_ip }}"
+      usernameSource: "session.logon.last.username"
+      passwordSource: "session.logon.last.password"
+    status_code: [200, 201, 409]
+  delegate_to: localhost
+  register: ad_aaa_result
+
+- name: Display AAA AD server creation result
+  debug:
+    msg: "AAA AD server {{ vs1_name }}-ad-servers - {{ 'created' if ad_aaa_result.status == 200 or ad_aaa_result.status == 201 else 'already exists' }}"
