@@ -14,6 +14,16 @@
   args:
     creates: /tmp/{{ vs1_name }}-saml.crt
 
+- name: Read certificate file
+  set_fact:
+    cert_content: "{{ lookup('file', '/tmp/' + vs1_name + '-saml.crt') }}"
+  delegate_to: localhost
+
+- name: Read key file
+  set_fact:
+    key_content: "{{ lookup('file', '/tmp/' + vs1_name + '-saml.key') }}"
+  delegate_to: localhost
+
 - name: Upload certificate to BIG-IP
   uri:
     url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}-saml.crt"
@@ -23,7 +33,8 @@
     validate_certs: "{{ bigip_validate_certs }}"
     headers:
       Content-Type: "application/octet-stream"
-    body: "{{ lookup('file', '/tmp/' + vs1_name + '-saml.crt') }}"
+      Content-Range: "0-{{ cert_content | length - 1 }}/{{ cert_content | length }}"
+    body: "{{ cert_content }}"
     status_code: [200, 201]
     timeout: 30
   delegate_to: localhost
@@ -37,7 +48,8 @@
     validate_certs: "{{ bigip_validate_certs }}"
     headers:
       Content-Type: "application/octet-stream"
-    body: "{{ lookup('file', '/tmp/' + vs1_name + '-saml.key') }}"
+      Content-Range: "0-{{ key_content | length - 1 }}/{{ key_content | length }}"
+    body: "{{ key_content }}"
     status_code: [200, 201]
     timeout: 30
   delegate_to: localhost
