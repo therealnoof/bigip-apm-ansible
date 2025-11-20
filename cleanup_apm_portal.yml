@@ -1,0 +1,264 @@
+---
+###############################################
+# Cleanup APM Portal Access Configuration (Solution 2)
+# Run this before deploying to remove existing configuration
+###############################################
+
+- name: Cleanup F5 BIG-IP APM Portal Access Configuration
+  hosts: bigip
+  gather_facts: no
+
+  vars_files:
+    - vars/main.yml
+    - vars/solution2.yml
+
+  tasks:
+    # Delete in reverse order: profiles -> policy -> policy-items -> agents -> customization groups -> resources
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ vs1_name }}-psp_{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+      loop:
+        - ent
+        - act_logon_page
+        - act_active_directory_auth
+        - act_active_directory_query
+        - act_ad_group_mapping
+        - end_allow
+        - end_deny
+
+    - name: Delete agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/{{ item.endpoint }}/~Common~{{ vs1_name }}-psp_{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+      loop:
+        - { endpoint: "ending-deny", name: "end_deny_ag" }
+        - { endpoint: "ending-allow", name: "end_allow_ag" }
+        - { endpoint: "aaa-active-directory", name: "act_active_directory_auth_ag" }
+        - { endpoint: "aaa-active-directory", name: "act_active_directory_query_ag" }
+        - { endpoint: "resource-assign", name: "act_ad_group_mapping_ag" }
+        - { endpoint: "logon-page", name: "act_logon_page_ag" }
+
+    - name: Delete baseline customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-psp_{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+      loop:
+        - logout
+        - eps
+        - errormap
+        - framework_installation
+        - general_ui
+
+    - name: Delete deny ending customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-psp_end_deny_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete logon page customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-psp_act_logon_page_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete portal resource customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-{{ item }}_resource_portal_access_customization"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+      loop:
+        - server1
+        - server2
+        - server3
+        - server4
+
+    - name: Delete network access customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-vpn_resource_network_access_customization"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete connectivity profile customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-cp_secure_access_client_customization"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete webtop section customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-network_access_resource_webtop_section_customization"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete connectivity profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/connectivity/~Common~{{ vs1_name }}-cp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete portal access resources
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/portal-access/~Common~{{ vs1_name }}-{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+      loop:
+        - server1
+        - server2
+        - server3
+        - server4
+
+    - name: Delete network access resource
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/network-access/~Common~{{ vs1_name }}-vpn"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete webtop
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop/~Common~{{ vs1_name }}-webtop"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete lease pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/leasepool/~Common~{{ vs1_name }}-vpn_pool"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete webtop section
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop-section/~Common~{{ vs1_name }}-network_access"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete AD server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ vs1_name }}-ad-servers"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Delete AS3 tenant (if exists)
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      ignore_errors: yes
+      when: create_as3_application | default(false) | bool
+
+    - name: Wait for cleanup to complete
+      pause:
+        seconds: 5
+
+    - debug:
+        msg: "Solution 2 cleanup complete. You can now run the deployment playbook."

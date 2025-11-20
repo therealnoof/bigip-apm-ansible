@@ -1,0 +1,438 @@
+---
+###############################################
+# F5 BIG-IP APM Portal Access Solution Cleanup/Delete
+#
+# Purpose: Remove all APM Portal Access solution components (Solution 2)
+# Based on: solution2-delete Postman collection
+#
+# IMPORTANT: This playbook deletes all configured objects
+# Use with caution - this action cannot be undone
+###############################################
+
+- name: Delete F5 BIG-IP APM Portal Access Solution
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/main.yml
+    - vars/solution2.yml
+
+  vars:
+    # Prompt for confirmation by default
+    confirm_delete: false
+
+  tasks:
+    - name: Display deletion warning
+      debug:
+        msg: |
+          ============================================
+          WARNING: APM Portal Access Solution Deletion
+          ============================================
+          This will DELETE all components for: {{ vs1_name }}
+
+          Components to be removed:
+          {% if create_gslb | default(false) %}
+          - External DNS/GSLB (if configured)
+          {% endif %}
+          {% if create_as3_application | default(false) %}
+          - AS3 Application: {{ partition_name }}
+          {% endif %}
+          - Access Profile: /Common/{{ vs1_name }}-psp
+          - Access Policy: /Common/{{ vs1_name }}-psp
+          {% if create_connectivity_profile | default(false) %}
+          - Connectivity Profile: /Common/{{ vs1_name }}-cp
+          {% endif %}
+          - Portal Resources: {{ portal_resources | length }} web applications
+          {% for portal in portal_resources %}
+            - {{ portal.name }}: {{ portal.application_uri }}
+          {% endfor %}
+          {% if create_network_access | default(false) %}
+          - Network Access: /Common/{{ vs1_name }}-vpn
+          {% endif %}
+          {% if create_webtop | default(false) %}
+          - Webtop: /Common/{{ vs1_name }}-webtop
+          {% endif %}
+          - AAA AD Server: /Common/{{ vs1_name }}-ad-servers
+          - All associated customization groups
+          - All policy items and agents
+
+          Target: {{ ansible_host }}
+
+          This action CANNOT be undone!
+          ============================================
+
+    - name: Confirm deletion
+      pause:
+        prompt: "Type 'DELETE' to confirm deletion (Ctrl+C to cancel)"
+      register: confirmation
+      when: not confirm_delete | bool
+
+    - name: Validate confirmation
+      assert:
+        that:
+          - confirmation.user_input == "DELETE"
+        fail_msg: "Deletion cancelled - confirmation text did not match"
+      when: not confirm_delete | bool
+
+    - name: Verify BIG-IP connectivity
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/info"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200]
+      delegate_to: localhost
+      register: bigip_check
+
+    - name: Display BIG-IP version
+      debug:
+        msg: "Connected to BIG-IP - Starting deletion process..."
+
+    # ========================================
+    # External DNS/GSLB Cleanup
+    # ========================================
+
+    - name: Delete WideIP from DNS server (AS3)
+      uri:
+        url: "https://{{ gslb_dns_server }}:443/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: wideip_delete
+      ignore_errors: yes
+      when: create_gslb | default(false) | bool
+
+    - name: Display WideIP deletion result
+      debug:
+        msg: "WideIP {{ dns1_name }} - {{ 'deleted' if wideip_delete.status == 200 else 'not found' }}"
+      when: create_gslb | default(false) | bool
+
+    - name: Delete virtual servers from GTM servers
+      uri:
+        url: "https://{{ gslb_dns_server }}:443/mgmt/tm/gtm/server/~Common~{{ item }}.f5lab.local/virtual-servers/~{{ partition_name }}~{{ path_name }}~{{ vs1_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      loop:
+        - bigip1
+        - bigip2
+      ignore_errors: yes
+      when: create_gslb | default(false) | bool
+
+    # ========================================
+    # Application Deletion (AS3)
+    # ========================================
+
+    - name: Delete AS3 application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: as3_delete
+      ignore_errors: yes
+      when: create_as3_application | default(false) | bool
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 Application {{ partition_name }} - {{ 'deleted' if as3_delete.status == 200 else 'not found' }}"
+      when: create_as3_application | default(false) | bool
+
+    # ========================================
+    # Access Profile and Policy
+    # ========================================
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: profile_delete
+      ignore_errors: yes
+
+    - name: Display access profile deletion result
+      debug:
+        msg: "Access Profile {{ vs1_name }}-psp - {{ 'deleted' if profile_delete.status == 200 else 'not found' }}"
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: policy_delete
+      ignore_errors: yes
+
+    - name: Display access policy deletion result
+      debug:
+        msg: "Access Policy {{ vs1_name }}-psp - {{ 'deleted' if policy_delete.status == 200 else 'not found' }}"
+
+    # ========================================
+    # Connectivity Profile and Tunnel
+    # ========================================
+
+    - name: Delete connectivity profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/connectivity/~Common~{{ vs1_name }}-cp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: cp_delete
+      ignore_errors: yes
+      when: create_connectivity_profile | default(false) | bool
+
+    - name: Display connectivity profile deletion result
+      debug:
+        msg: "Connectivity Profile {{ vs1_name }}-cp - {{ 'deleted' if cp_delete.status == 200 else 'not found' }}"
+      when: create_connectivity_profile | default(false) | bool
+
+    - name: Delete VPN tunnel
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/net/tunnels/tunnel/~Common~{{ vs1_name }}-tunnel"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: tunnel_delete
+      ignore_errors: yes
+      when: create_connectivity_profile | default(false) | bool
+
+    - name: Display tunnel deletion result
+      debug:
+        msg: "VPN Tunnel {{ vs1_name }}-tunnel - {{ 'deleted' if tunnel_delete.status == 200 else 'not found' }}"
+      when: create_connectivity_profile | default(false) | bool
+
+    # ========================================
+    # AAA AD Servers
+    # ========================================
+
+    - name: Delete AAA Active Directory server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ vs1_name }}-ad-servers"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: ad_aaa_delete
+      ignore_errors: yes
+
+    - name: Display AAA AD deletion result
+      debug:
+        msg: "AAA AD Server {{ vs1_name }}-ad-servers - {{ 'deleted' if ad_aaa_delete.status == 200 else 'not found' }}"
+
+    - name: Delete AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ vs1_name }}-ad-pool"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: ad_pool_delete
+      ignore_errors: yes
+
+    - name: Display AD pool deletion result
+      debug:
+        msg: "AD Pool {{ vs1_name }}-ad-pool - {{ 'deleted' if ad_pool_delete.status == 200 else 'not found' }}"
+
+    - name: Delete AD server nodes
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ item.ip }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      loop: "{{ ad_servers | default([]) }}"
+      register: ad_node_delete
+      ignore_errors: yes
+
+    - name: Display AD node deletion results
+      debug:
+        msg: "AD Node {{ item.item.ip }} - {{ 'deleted' if item.status == 200 else 'not found' }}"
+      loop: "{{ ad_node_delete.results | default([]) }}"
+      when: ad_servers is defined
+
+    # ========================================
+    # Webtop
+    # ========================================
+
+    - name: Delete webtop
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop/~Common~{{ vs1_name }}-webtop"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: webtop_delete
+      ignore_errors: yes
+      when: create_webtop | default(false) | bool
+
+    - name: Display webtop deletion result
+      debug:
+        msg: "Webtop {{ vs1_name }}-webtop - {{ 'deleted' if webtop_delete.status == 200 else 'not found' }}"
+      when: create_webtop | default(false) | bool
+
+    - name: Delete webtop section
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop-section/~Common~{{ vs1_name }}-network_access"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: webtop_section_delete
+      ignore_errors: yes
+      when: create_webtop | default(false) | bool
+
+    - name: Display webtop section deletion result
+      debug:
+        msg: "Webtop Section {{ vs1_name }}-network_access - {{ 'deleted' if webtop_section_delete.status == 200 else 'not found' }}"
+      when: create_webtop | default(false) | bool
+
+    # ========================================
+    # Portal Access Resources (Solution 2)
+    # ========================================
+
+    - name: Delete portal access resources
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/portal-access/~Common~{{ vs1_name }}-{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      loop: "{{ portal_resources | default([]) }}"
+      register: portal_delete
+      ignore_errors: yes
+      when: create_portal_resources | default(false) | bool
+
+    - name: Display portal resource deletion results
+      debug:
+        msg: "Portal Resource {{ vs1_name }}-{{ item.item.name }} ({{ item.item.application_uri }}) - {{ 'deleted' if item.status == 200 else 'not found' }}"
+      loop: "{{ portal_delete.results | default([]) }}"
+      when: create_portal_resources | default(false) | bool
+
+    # ========================================
+    # Network Access Resources
+    # ========================================
+
+    - name: Delete network access resource
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/network-access/~Common~{{ vs1_name }}-vpn"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: network_access_delete
+      ignore_errors: yes
+      when: create_network_access | default(false) | bool
+
+    - name: Display network access deletion result
+      debug:
+        msg: "Network Access {{ vs1_name }}-vpn - {{ 'deleted' if network_access_delete.status == 200 else 'not found' }}"
+      when: create_network_access | default(false) | bool
+
+    - name: Delete IP lease pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/leasepool/~Common~{{ vs1_name }}-vpn_pool"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+      delegate_to: localhost
+      register: lease_pool_delete
+      ignore_errors: yes
+      when: create_network_access | default(false) | bool
+
+    - name: Display lease pool deletion result
+      debug:
+        msg: "IP Lease Pool {{ vs1_name }}-vpn_pool - {{ 'deleted' if lease_pool_delete.status == 200 else 'not found' }}"
+      when: create_network_access | default(false) | bool
+
+    # ========================================
+    # Completion Summary
+    # ========================================
+
+    - name: Display deletion summary
+      debug:
+        msg: |
+          ============================================
+          Deletion Complete!
+          ============================================
+
+          Removed Components:
+          {% if create_gslb | default(false) %}
+          - WideIP: {{ dns1_name }} {{ '✓' if wideip_delete.status == 200 else '(not found)' }}
+          - GTM Virtual Servers {{ '✓' }}
+          {% endif %}
+          {% if create_as3_application | default(false) %}
+          - AS3 Application: {{ partition_name }} {{ '✓' if as3_delete.status == 200 else '(not found)' }}
+          {% endif %}
+          - Access Profile: {{ vs1_name }}-psp {{ '✓' if profile_delete.status == 200 else '(not found)' }}
+          - Access Policy: {{ vs1_name }}-psp {{ '✓' if policy_delete.status == 200 else '(not found)' }}
+          {% if create_connectivity_profile | default(false) %}
+          - Connectivity Profile: {{ vs1_name }}-cp {{ '✓' if cp_delete.status == 200 else '(not found)' }}
+          - VPN Tunnel: {{ vs1_name }}-tunnel {{ '✓' if tunnel_delete.status == 200 else '(not found)' }}
+          {% endif %}
+          - AAA AD Server: {{ vs1_name }}-ad-servers {{ '✓' if ad_aaa_delete.status == 200 else '(not found)' }}
+          - AD Pool: {{ vs1_name }}-ad-pool {{ '✓' if ad_pool_delete.status == 200 else '(not found)' }}
+          {% if ad_servers is defined %}
+          {% for result in ad_node_delete.results %}
+          - AD Node: {{ result.item.ip }} {{ '✓' if result.status == 200 else '(not found)' }}
+          {% endfor %}
+          {% endif %}
+          {% if create_webtop | default(false) %}
+          - Webtop: {{ vs1_name }}-webtop {{ '✓' if webtop_delete.status == 200 else '(not found)' }}
+          - Webtop Section: {{ vs1_name }}-network_access {{ '✓' if webtop_section_delete.status == 200 else '(not found)' }}
+          {% endif %}
+          {% if create_portal_resources | default(false) %}
+          - Portal Access Resources:
+          {% for result in portal_delete.results %}
+            - {{ vs1_name }}-{{ result.item.name }} {{ '✓' if result.status == 200 else '(not found)' }}
+          {% endfor %}
+          {% endif %}
+          {% if create_network_access | default(false) %}
+          - Network Access: {{ vs1_name }}-vpn {{ '✓' if network_access_delete.status == 200 else '(not found)' }}
+          - IP Lease Pool: {{ vs1_name }}-vpn_pool {{ '✓' if lease_pool_delete.status == 200 else '(not found)' }}
+          {% endif %}
+
+          Note: Policy items, agents, and customization groups
+                are automatically deleted with the policy/profile.
+
+          The {{ vs1_name }} Portal Access solution has been removed.
+          ============================================

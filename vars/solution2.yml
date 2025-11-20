@@ -13,7 +13,7 @@ path_name: "solution2"
 partition_name: "solution2"
 
 # Customization type (modern, standard)
-custom_type: "modern"
+custom_type: "standard"
 
 # Feature flags
 create_webtop: true
