@@ -1,0 +1,109 @@
+---
+###############################################
+# SAML IDP Connector Configuration
+# This task file creates the SAML Identity Provider connector
+# Includes certificate upload and installation
+###############################################
+
+- name: Prepare certificate content (strip trailing whitespace)
+  set_fact:
+    cert_content_clean: "{{ saml_idp.certificate_content | trim }}"
+
+- name: Add final newline to certificate
+  set_fact:
+    cert_content_final: "{{ cert_content_clean }}\n"
+
+- name: Calculate certificate content length
+  set_fact:
+    cert_content_length: "{{ cert_content_final | length }}"
+
+- name: Debug certificate info
+  debug:
+    msg:
+      - "Certificate length: {{ cert_content_length }}"
+      - "Certificate starts with: {{ cert_content_final[:29] }}"
+      - "Certificate ends with: {{ cert_content_final[-30:] | replace('\n', '\\n') }}"
+
+- name: Upload IDP Certificate File
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ saml_idp.certificate_name }}.crt"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body: "{{ cert_content_final }}"
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Length: "{{ cert_content_length }}"
+      Content-Range: "0-{{ cert_content_length | int - 1 }}/{{ cert_content_length }}"
+      Connection: "Keep-alive"
+    validate_certs: "{{ bigip_validate_certs }}"
+    status_code: [200, 201]
+    timeout: 60
+  delegate_to: localhost
+  register: cert_upload_result
+  changed_when: cert_upload_result.status in [200, 201]
+  failed_when: cert_upload_result.status not in [200, 201]
+
+- name: Install IDP Certificate
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      command: "install"
+      name: "{{ saml_idp.certificate_name }}"
+      from-local-file: "/var/config/rest/downloads/{{ saml_idp.certificate_name }}.crt"
+    headers:
+      Content-Type: "application/json"
+    validate_certs: "{{ bigip_validate_certs }}"
+    status_code: [200, 201]
+    timeout: 60
+  delegate_to: localhost
+  register: cert_install_result
+  changed_when: cert_install_result.status in [200, 201]
+  failed_when: cert_install_result.status not in [200, 201]
+
+- name: Create SAML IDP Connector
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ saml_idp.name }}"
+      partition: "Common"
+      artifactResolutionServiceAddr: "{{ saml_idp.artifact_resolution_service_addr }}"
+      artifactResolutionServicePort: "{{ saml_idp.artifact_resolution_service_port }}"
+      entityId: "{{ saml_idp.entity_id }}"
+      identityLocation: "{{ saml_idp.identity_location }}"
+      idpCertificate: "{{ saml_idp.certificate_name }}"
+      locationSpecific: "{{ saml_idp.location_specific }}"
+      signArtifactResolutionRq: "{{ saml_idp.sign_artifact_resolution_rq }}"
+      signatureType: "{{ saml_idp.signature_type }}"
+      singleLogoutBinding: "{{ saml_idp.slo_binding }}"
+      ssoBinding: "{{ saml_idp.sso_binding }}"
+      ssoUri: "{{ saml_idp.sso_uri }}"
+      wantAuthnRequestSigned: "{{ saml_idp.want_authn_request_signed }}"
+      wantDetachedSignature: "{{ saml_idp.want_detached_signature }}"
+    headers:
+      Content-Type: "application/json"
+    validate_certs: "{{ bigip_validate_certs }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: idp_connector_result
+  changed_when: idp_connector_result.status in [200, 201]
+  failed_when:
+    - idp_connector_result.status not in [200, 201, 409]
+
+- name: Debug IDP Connector Result
+  debug:
+    msg:
+      - "IDP Connector Status: {{ idp_connector_result.status }}"
+      - "IDP Connector Name: {{ saml_idp.name }}"
+      - "Entity ID: {{ saml_idp.entity_id }}"
+      - "SSO URI: {{ saml_idp.sso_uri }}"
+  when: idp_connector_result.status in [200, 201, 409]

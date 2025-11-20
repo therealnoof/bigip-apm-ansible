@@ -1,0 +1,51 @@
+---
+###############################################
+# SAML Service Provider Configuration
+# This task file creates the SAML Service Provider service
+# that represents the BIG-IP as a SAML SP
+###############################################
+
+- name: Create SAML Service Provider Service
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ saml_sp.name }}"
+      partition: "Common"
+      assertionConsumerBinding: "{{ saml_sp.assertion_consumer_binding }}"
+      authContextComparisonMethod: "{{ saml_sp.auth_context_comparison_method }}"
+      entityId: "{{ saml_sp.entity_id }}"
+      forceAuthn: "{{ saml_sp.force_authn }}"
+      isAuthnRequestSigned: "{{ saml_sp.is_authn_request_signed }}"
+      locationSpecific: "{{ saml_sp.location_specific }}"
+      nameIdPolicyAllowCreate: "{{ saml_sp.name_id_policy_allow_create }}"
+      spHost: "{{ saml_sp.sp_host }}"
+      spScheme: "{{ saml_sp.sp_scheme }}"
+      wantAssertionEncrypted: "{{ saml_sp.want_assertion_encrypted }}"
+      wantAssertionSigned: "{{ saml_sp.want_assertion_signed }}"
+      idpConnectors:
+        - name: "{{ saml_idp.name }}"
+          partition: "Common"
+    headers:
+      Content-Type: "application/json"
+    validate_certs: "{{ bigip_validate_certs }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: saml_sp_result
+  changed_when: saml_sp_result.status in [200, 201]
+  failed_when:
+    - saml_sp_result.status not in [200, 201, 409]
+
+- name: Debug SAML SP Result
+  debug:
+    msg:
+      - "SAML SP Status: {{ saml_sp_result.status }}"
+      - "SAML SP Name: {{ saml_sp.name }}"
+      - "Entity ID: {{ saml_sp.entity_id }}"
+      - "SP Host: {{ saml_sp.sp_host }}"
+      - "IDP Connector: {{ saml_idp.name }}"
+  when: saml_sp_result.status in [200, 201, 409]

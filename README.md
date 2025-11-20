@@ -1,6 +1,6 @@
 # F5 BIG-IP APM Solutions - Ansible Automation
 
-Ansible playbooks for deploying F5 BIG-IP Access Policy Manager (APM) solutions with Active Directory authentication, converted from Postman REST API collections.
+Ansible playbooks for deploying F5 BIG-IP Access Policy Manager (APM) solutions with Active Directory and SAML authentication, converted from Postman REST API collections.
 
 ## Overview
 
@@ -28,6 +28,16 @@ This project automates the deployment of production-ready APM solutions includin
 - **GSLB** - Optional multi-datacenter DNS configuration
 
 **Source:** [solution2-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution2/postman/solution2-create.postman_collection.json)
+
+### Solution 3: SAML Service Provider with Okta IDP
+- **SAML Authentication** - SAML 2.0 Service Provider configuration
+- **Identity Provider Integration** - Okta (or other SAML 2.0 IDP) connector
+- **Certificate Management** - IDP signing certificate installation
+- **Access Policy** - Per-session policy with SAML authentication
+- **Application Deployment** - AS3-based HTTPS virtual server with APM profile
+- **GSLB** - Optional multi-datacenter DNS configuration
+
+**Source:** [solution3-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution3/postman/solution3-create.postman_collection.json)
 
 ## Architecture
 
@@ -159,6 +169,76 @@ Start → Logon Page → AD Auth → AD Query → AD Group Mapping → Allow
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Solution 3: SAML Authentication Flow
+
+```
+Start → SAML Auth → Successful → Allow
+           │             │
+           │             ▼ (Failed)
+           │           Deny
+           ▼
+     Redirect to IDP
+     (Okta SSO)
+           │
+           ▼
+     User authenticates
+     at IDP
+           │
+           ▼
+     SAML assertion
+     returned to SP
+```
+
+**Authentication Flow:** Users are redirected to Okta IDP for authentication, then SAML assertion is validated before granting access
+
+### Components Architecture (Solution 3)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Browser Client                                           │
+└───────────────────┬─────────────────────────────────────┘
+                    │ HTTPS (443)
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ F5 BIG-IP - APM SAML Service Provider                  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Virtual Server (HTTPS)                            │  │
+│  │ - Client SSL Profile                             │  │
+│  │ - Access Profile: solution3-psp                  │  │
+│  └──────────────────────────────────────────────────┘  │
+│                         │                                │
+│  ┌──────────────────────┼───────────────────────────┐  │
+│  │ Per-Session Policy   ▼                            │  │
+│  │                                                    │  │
+│  │  Start → SAML Auth → Success → Allow             │  │
+│  │             │           │                         │  │
+│  │             │           ▼ (Failed)                │  │
+│  │             │         Deny                        │  │
+│  │             ▼                                      │  │
+│  │      Redirect to IDP                              │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ SAML Configuration                                │  │
+│  │ - Service Provider: sp.acme.com                  │  │
+│  │ - Entity ID: https://sp.acme.com                 │  │
+│  │ - IDP Connector: solution3-sso                   │  │
+│  │ - IDP Certificate: solution3-idp                 │  │
+│  │ - SSO Binding: HTTP-POST                         │  │
+│  │ - Signature Type: RSA-SHA256                     │  │
+│  └──────────────────────────────────────────────────┘  │
+└───────────────────┬─────────────────────────────────────┘
+                    │ SAML Redirect/POST
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ Okta Identity Provider (dev-818899.okta.com)           │
+│ - Entity ID: http://www.okta.com/exkafm6qvkEv6UK0d4x6  │
+│ - SSO URI: https://dev-818899.okta.com/.../sso/saml   │
+│ - User Directory & Authentication                       │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## Project Structure
 
 ```
@@ -169,19 +249,29 @@ bigip-apm-ansible/
 ├── inventory.yml                      # BIG-IP device inventory
 ├── deploy_apm_vpn.yml                # Solution 1: VPN deployment playbook
 ├── deploy_apm_portal.yml             # Solution 2: Portal deployment playbook
-├── delete_apm_vpn.yml                # Cleanup/deletion playbook
+├── deploy_apm_saml.yml               # Solution 3: SAML deployment playbook
+├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
+├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
+├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
+├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
+├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
+├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
 ├── vars/
 │   ├── main.yml                      # Solution 1 variables
-│   └── solution2.yml                 # Solution 2 variables
+│   ├── solution2.yml                 # Solution 2 variables
+│   └── solution3.yml                 # Solution 3 variables (SAML)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
 │   ├── network_access.yml             # Network access resource
 │   ├── portal_resources.yml           # Portal access resources (Solution 2)
 │   ├── portal_resource_item.yml       # Single portal resource creation
+│   ├── saml_idp_connector.yml        # SAML IDP connector (Solution 3)
+│   ├── saml_sp.yml                   # SAML Service Provider (Solution 3)
 │   ├── webtop.yml                    # Webtop configuration
 │   ├── access_policy.yml             # Solution 1 per-session policy
 │   ├── access_policy_solution2.yml    # Solution 2 policy with AD groups
+│   ├── access_policy_solution3.yml    # Solution 3 policy with SAML auth
 │   ├── as3_deployment.yml            # Application deployment
 │   └── gslb_configuration.yml        # DNS/GSLB setup
 └── docs/
@@ -189,7 +279,10 @@ bigip-apm-ansible/
     ├── CLEANUP_GUIDE.md              # Deletion and cleanup guide
     ├── solution1-create.postman_collection.json   # Solution 1 source
     ├── solution1-delete.postman_collection.json   # Solution 1 delete
-    └── solution2-create.postman_collection.json   # Solution 2 source
+    ├── solution2-create.postman_collection.json   # Solution 2 source
+    ├── solution2-delete.postman_collection.json   # Solution 2 delete
+    ├── solution3-create.postman_collection.json   # Solution 3 source
+    └── solution3-delete.postman_collection.json   # Solution 3 delete
 
 ```
 
@@ -313,6 +406,49 @@ ansible-playbook deploy_apm_portal.yml
 - Webtop with group-specific resources
 - Access profile and policy
 
+### Solution 3: SAML Service Provider Deployment
+
+Deploy the SAML authentication solution with Okta IDP:
+
+```bash
+ansible-playbook deploy_apm_saml.yml
+```
+
+**Deploys:**
+- SAML IDP connector (Okta or other SAML 2.0 IDP)
+- SAML Service Provider configuration
+- IDP signing certificate installation
+- SAML authentication access policy
+- Access profile with SAML settings
+- Optional AS3 virtual server deployment
+- Optional GSLB/DNS configuration
+
+**Configuration:**
+
+Before deploying, customize `vars/solution3.yml`:
+
+```yaml
+# SAML Identity Provider (Okta)
+saml_idp:
+  entity_id: "http://www.okta.com/YOUR_APP_ID"
+  sso_uri: "https://YOUR_TENANT.okta.com/app/.../sso/saml"
+  certificate_content: |
+    -----BEGIN CERTIFICATE-----
+    YOUR_IDP_CERTIFICATE_HERE
+    -----END CERTIFICATE-----
+
+# SAML Service Provider
+saml_sp:
+  entity_id: "https://sp.acme.com"
+  sp_host: "sp.acme.com"
+
+# Virtual Server
+as3_config:
+  virtual_address: "10.1.10.130"
+  pool_members:
+    - "10.1.20.6:80"
+```
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -376,10 +512,32 @@ ansible-playbook delete_apm_vpn.yml
 To remove Solution 2 deployment:
 
 ```bash
-ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2"
+ansible-playbook delete_apm_portal.yml
 ```
 
-The delete playbook works for both solutions by specifying the solution name.
+**Interactive confirmation required** - you must type `DELETE` to proceed.
+
+### Remove Solution 3 (SAML)
+
+To remove Solution 3 deployment:
+
+```bash
+ansible-playbook delete_apm_saml.yml
+```
+
+**Interactive confirmation required** - you must type `DELETE` to proceed.
+
+### Automated Cleanup (No Confirmation)
+
+For CI/CD pipelines or automated teardown:
+
+```bash
+ansible-playbook cleanup_apm_vpn.yml      # Solution 1
+ansible-playbook cleanup_apm_portal.yml   # Solution 2
+ansible-playbook cleanup_apm_saml.yml     # Solution 3
+```
+
+**WARNING:** These skip safety prompts. Use only in automation.
 
 ### Skip Confirmation (CI/CD)
 
@@ -407,6 +565,15 @@ ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2" -e "confirm_delete=t
 - Network access resource (if deployed)
 - Webtop and webtop sections
 - AAA AD server, pool, and node
+- AS3 application partition (if deployed)
+- GSLB configuration (if configured)
+
+**Solution 3 (SAML):**
+- All access policy objects (policy, profile, items, agents)
+- SAML Service Provider configuration
+- SAML IDP Connector
+- IDP signing certificate
+- All customization groups
 - AS3 application partition (if deployed)
 - GSLB configuration (if configured)
 

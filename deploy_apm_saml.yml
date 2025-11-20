@@ -1,0 +1,386 @@
+---
+###############################################
+# F5 BIG-IP APM SAML Service Provider Deployment
+# Solution 3: SAML Authentication with Okta IDP
+###############################################
+#
+# This playbook deploys a complete APM SAML solution with:
+# - SAML Identity Provider connector (Okta)
+# - SAML Service Provider configuration
+# - SAML authentication access policy
+# - APM access profile
+# - Optional AS3 application deployment
+# - Optional GSLB/DNS configuration
+#
+# Source: Converted from solution3-create Postman collection
+# https://github.com/f5devcentral/access-solutions/blob/master/solution3/postman/solution3-create.postman_collection.json
+#
+# Usage:
+#   ansible-playbook deploy_apm_saml.yml
+#   ansible-playbook deploy_apm_saml.yml --limit bigip-01
+#   ansible-playbook deploy_apm_saml.yml -e "@vars/solution3.yml"
+#
+###############################################
+
+- name: Deploy F5 BIG-IP APM SAML Solution
+  hosts: bigip
+  gather_facts: no
+  connection: local
+  vars_files:
+    - vars/solution3.yml
+
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          ============================================
+          APM SAML Service Provider Solution Deployment
+          ============================================
+
+          Solution Name: {{ vs1_name }}
+          DNS Name: {{ dns1_name }}
+          Customization Type: {{ custom_type }}
+
+          SAML Configuration:
+          - Service Provider Entity ID: {{ saml_sp.entity_id }}
+          - Identity Provider Entity ID: {{ saml_idp.entity_id }}
+          - SSO URI: {{ saml_idp.sso_uri }}
+          - SSO Binding: {{ saml_idp.sso_binding }}
+          - Signature Type: {{ saml_idp.signature_type }}
+
+          Components to Deploy:
+          - SAML IDP Connector ({{ saml_idp.name }})
+          - SAML Service Provider ({{ saml_sp.name }})
+          - SAML Authentication Policy
+          - APM Access Profile
+          {% if create_as3_application | default(false) %}
+          - AS3 Virtual Server Application
+          {% endif %}
+          {% if create_gslb | default(false) %}
+          - GSLB/DNS Configuration
+          {% endif %}
+
+          ============================================
+
+    - name: Verify BIG-IP connectivity
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/info"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200]
+        timeout: 30
+      delegate_to: localhost
+      register: bigip_check
+      failed_when: bigip_check.status != 200
+
+    - name: Display BIG-IP AS3 version
+      debug:
+        msg: "BIG-IP connectivity verified - AS3 version: {{ bigip_check.json.version | default('N/A') }}"
+
+    ###############################################
+    # SAML IDP Connector Configuration (BEFORE Transaction)
+    ###############################################
+
+    - name: Configure SAML IDP Connector (certificate + IDP connector)
+      include_tasks: tasks/saml_idp_connector.yml
+      vars:
+        transaction_id: ""  # Not in transaction
+      tags:
+        - saml
+        - idp
+
+    ###############################################
+    # SAML Service Provider Configuration (BEFORE Transaction)
+    ###############################################
+
+    - name: Configure SAML Service Provider
+      include_tasks: tasks/saml_sp.yml
+      vars:
+        transaction_id: ""  # Not in transaction
+      tags:
+        - saml
+        - sp
+
+    ###############################################
+    # Transaction Start (For Policy Objects Only)
+    ###############################################
+
+    - name: Create transaction for policy configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body: {}
+        status_code: [200, 201]
+        timeout: 30
+      delegate_to: localhost
+      register: transaction_result
+
+    - name: Set transaction ID
+      set_fact:
+        transaction_id: "{{ transaction_result.json.transId }}"
+
+    - name: Display transaction ID
+      debug:
+        msg: "Created transaction ID: {{ transaction_id }}"
+
+    ###############################################
+    # Access Policy with SAML Authentication (IN Transaction)
+    ###############################################
+
+    - name: Create Access Policy with SAML Authentication
+      include_tasks: tasks/access_policy_solution3.yml
+      tags:
+        - policy
+        - saml-auth
+
+    ###############################################
+    # Transaction Commit
+    ###############################################
+
+    - name: Commit transaction
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ transaction_id }}"
+        method: PUT
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body:
+          state: "VALIDATING"
+        status_code: [200]
+        timeout: 60
+      delegate_to: localhost
+      register: commit_result
+
+    - name: Display transaction commit status
+      debug:
+        msg: "Transaction committed successfully"
+      when: commit_result.status == 200
+
+    ###############################################
+    # Apply Policy (Generate)
+    ###############################################
+
+    - name: Apply access policy (generate)
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ access_profile.name }}"
+        method: PATCH
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body:
+          generationAction: "increment"
+        status_code: [200]
+        timeout: 60
+      delegate_to: localhost
+      register: policy_generation_result
+
+    - name: Display policy generation status
+      debug:
+        msg:
+          - "Policy generation completed"
+          - "Profile: {{ access_profile.name }}"
+      when: policy_generation_result.status == 200
+
+    ###############################################
+    # Virtual Server via AS3 (Optional)
+    ###############################################
+
+    - name: Deploy AS3 Application with SAML Profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body: |
+          {
+            "class": "ADC",
+            "action": "deploy",
+            "persist": true,
+            "declaration": {
+              "class": "ADC",
+              "schemaVersion": "3.14.0",
+              "id": "APM-SAML",
+              "{{ partition_name }}": {
+                "class": "Tenant",
+                "{{ vs1_name }}": {
+                  "class": "Application",
+                  "template": "generic",
+                  "{{ vs1_name }}": {
+                    "class": "Service_HTTPS",
+                    "virtualAddresses": ["{{ as3_config.virtual_address }}"],
+                    "virtualPort": {{ as3_config.virtual_port }},
+                    "serverTLS": "{{ vs1_name }}-clientssl",
+                    "pool": "{{ as3_config.pool_name }}",
+                    "snat": "{{ as3_config.snat }}",
+                    "profileAccess": {
+                      "bigip": "/Common/{{ access_profile.name }}"
+                    }
+                  },
+                  "{{ vs1_name }}-clientssl": {
+                    "class": "TLS_Server",
+                    "certificates": [
+                      {
+                        "certificate": "tlsserver_local_cert"
+                      }
+                    ]
+                  },
+                  "tlsserver_local_cert": {
+                    "class": "Certificate",
+                    "certificate": {"bigip": "/Common/{{ as3_config.tls_cert_name }}"},
+                    "privateKey": {"bigip": "/Common/{{ as3_config.tls_key_name }}"}
+                  },
+                  "{{ as3_config.pool_name }}": {
+                    "class": "Pool",
+                    "members": [
+                      {
+                        "serverAddresses": ["{{ as3_config.pool_members[0].split(':')[0] }}"],
+                        "servicePort": {{ as3_config.pool_members[0].split(':')[1] }}
+                      }
+                    ],
+                    "monitors": ["{{ as3_config.pool_monitor }}"]
+                  }
+                }
+              }
+            }
+          }
+        status_code: [200, 201, 202]
+        timeout: 120
+      delegate_to: localhost
+      when: create_as3_application | default(false)
+      register: as3_result
+      tags:
+        - as3
+        - virtual-server
+
+    - name: Display AS3 deployment status
+      debug:
+        msg:
+          - "AS3 deployment completed"
+          - "Virtual Server: {{ as3_config.virtual_address }}:{{ as3_config.virtual_port }}"
+          - "Access Profile: /Common/{{ access_profile.name }}"
+      when:
+        - create_as3_application | default(false)
+        - as3_result.status in [200, 201, 202]
+
+    ###############################################
+    # GSLB Configuration (Optional)
+    ###############################################
+
+    - name: Deploy GSLB Wide-IP via AS3
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body:
+          class: "ADC"
+          action: "deploy"
+          persist: true
+          declaration:
+            class: "ADC"
+            schemaVersion: "3.14.0"
+            id: "GSLB"
+            "{{ partition_name }}-gslb":
+              class: "Tenant"
+              "{{ vs1_name }}-gslb":
+                class: "Application"
+                template: "generic"
+                "{{ gslb_config.wideip_name }}":
+                  class: "GSLB_WideIP"
+                  pools:
+                    - "{{ gslb_config.pool_name }}"
+                "{{ gslb_config.pool_name }}":
+                  class: "GSLB_Pool"
+                  members: "{{ gslb_config.pool_members | map('regex_replace', '^{\"ip\": \"(.+)\", \"port\": (\\d+)}$', '{\"server\": \"\\1\", \"virtualServer\": \"\\1:\\2\"}') | list }}"
+        status_code: [200, 201, 202]
+        timeout: 120
+      delegate_to: localhost
+      when: create_gslb | default(false)
+      register: gslb_result
+      tags:
+        - gslb
+        - dns
+
+    - name: Display GSLB deployment status
+      debug:
+        msg:
+          - "GSLB deployment completed"
+          - "Wide-IP: {{ gslb_config.wideip_name }}"
+          - "Pool: {{ gslb_config.pool_name }}"
+      when:
+        - create_gslb | default(false)
+        - gslb_result.status in [200, 201, 202]
+
+    ###############################################
+    # Deployment Summary
+    ###############################################
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================
+          Deployment Complete!
+          ============================================
+
+          Solution: {{ vs1_name }}
+          Access URL: https://{{ dns1_name }}
+
+          SAML Configuration:
+          - Service Provider: {{ saml_sp.name }}
+          - Entity ID: {{ saml_sp.entity_id }}
+          - Identity Provider: {{ saml_idp.name }}
+          - IDP Entity ID: {{ saml_idp.entity_id }}
+          - SSO URI: {{ saml_idp.sso_uri }}
+
+          Access Policy:
+          - Policy Name: {{ access_policy.name }}
+          - Profile Name: {{ access_profile.name }}
+          - Policy Timeout: {{ access_profile.access_policy_timeout }}s
+          - Session Timeout: {{ access_profile.max_session_timeout }}s
+
+          {% if create_as3_application | default(false) %}
+          Virtual Server:
+          - IP: {{ as3_config.virtual_address }}:{{ as3_config.virtual_port }}
+          - Pool: {{ as3_config.pool_name }}
+          - Backend Members: {{ as3_config.pool_members | join(', ') }}
+          - Access Profile: /Common/{{ access_profile.name }}
+          {% endif %}
+
+          {% if create_gslb | default(false) %}
+          GSLB Configuration:
+          - Wide-IP: {{ gslb_config.wideip_name }}
+          - Pool: {{ gslb_config.pool_name }}
+          {% endif %}
+
+          Next Steps:
+          1. Test SAML authentication at https://{{ dns1_name }}
+          2. Verify redirect to IDP (Okta) login page
+          3. Test successful SAML assertion processing
+          4. Verify access to backend application
+          5. Check APM logs at /var/log/apm for SAML events
+
+          Troubleshooting:
+          - Review SAML assertion in APM session variables
+          - Check IDP certificate validity
+          - Verify SP entity ID matches IDP configuration
+          - Ensure DNS resolution for {{ dns1_name }}
+
+          Cleanup:
+          To remove this deployment, run:
+            ansible-playbook delete_apm_saml.yml
+
+          ============================================
+      tags:
+        - summary
