@@ -39,8 +39,8 @@
     body:
       name: "{{ vs1_name }}-cp_secure_access_client_customization"
       partition: "Common"
-      type: "connectivity-profile"
-      source: "/Common/connectivity-profile_{{ custom_type }}"
+      type: "secure-access-client"
+      source: "/Common/standard"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: cp_custom_result

@@ -9,9 +9,9 @@ all:
       hosts:
         # Primary BIG-IP for APM deployment
         bigip-01:
-          ansible_host: 10.1.1.4
+          ansible_host: 93c839ab-52c5-423d-af97-2d239b1b8fd3.access.udf.f5.com
           bigip_user: admin
-          bigip_pass: admin
+          bigip_pass: f5Twister!
 
         # Additional BIG-IP devices (uncomment to use)
         # bigip-02:
