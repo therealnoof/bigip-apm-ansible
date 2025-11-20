@@ -30,12 +30,7 @@
       logLevel: "{{ saml_idp_service.log_level }}"
       spConnectors:
         - "{{ saml_idp_service.sp_connector }}"
-      samlAttributes:
-        {% for attr in saml_idp_service.attributes %}
-        - name: "{{ attr.name }}"
-          type: "{{ attr.type }}"
-          value: "{{ attr.value }}"
-        {% endfor %}
+      samlAttributes: "{{ saml_idp_service.attributes }}"
     status_code: [200, 201, 409]
     timeout: 30
   delegate_to: localhost
