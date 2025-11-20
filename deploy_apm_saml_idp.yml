@@ -86,6 +86,16 @@
         msg: "BIG-IP connectivity verified - AS3 version: {{ bigip_check.json.version | default('N/A') }}"
 
     ###############################################
+    # Create Self-Signed Certificate for SAML
+    ###############################################
+
+    - name: Create self-signed certificate for SAML IDP
+      include_tasks: tasks/create_self_signed_cert.yml
+      tags:
+        - certificate
+        - saml
+
+    ###############################################
     # AD Pool and AAA Server Configuration (BEFORE Transaction)
     ###############################################
 

@@ -58,10 +58,10 @@ saml_sp_connector:
   description: "SAML Service Provider Connector"
 
   # Certificate configuration
-  # Using default BIG-IP self-signed certificate
+  # Auto-generated self-signed certificate will be created: /Common/{{ vs1_name }}-saml
   # To use your own certificate, change this to match your SP's certificate name on BIG-IP
-  # Example: sp_certificate: "/Common/acme.com-wildcard" (certificate object name, not filename)
-  sp_certificate: "/Common/default"  # SP's certificate for signature validation
+  # Example: sp_certificate: "/Common/acme.com-wildcard"
+  sp_certificate: "/Common/{{ vs1_name }}-saml"  # SP's certificate for signature validation
 
   # Encryption settings
   encryption_type: "aes128"
@@ -95,11 +95,11 @@ saml_idp_service:
   idp_scheme: "https"
 
   # Certificate configuration
-  # Using default BIG-IP self-signed certificate
+  # Auto-generated self-signed certificate will be created: /Common/{{ vs1_name }}-saml
   # To use your own certificate, change these to match your FQDN certificate name on BIG-IP
-  # Example: signature_key: "/Common/acme.com-wildcard" (certificate object name, not filename)
-  signature_key: "/Common/default"
-  idp_certificate: "/Common/default"
+  # Example: signature_key: "/Common/acme.com-wildcard"
+  signature_key: "/Common/{{ vs1_name }}-saml"
+  idp_certificate: "/Common/{{ vs1_name }}-saml"
 
   # Encryption settings
   encryption_type: "aes128"

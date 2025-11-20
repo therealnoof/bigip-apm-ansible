@@ -1,0 +1,93 @@
+---
+###############################################
+# Create Self-Signed Certificate for SAML IDP
+# Generates a certificate and key for SAML assertion signing
+###############################################
+
+- name: Generate self-signed certificate and key locally
+  command: >
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048
+    -keyout /tmp/{{ vs1_name }}-saml.key
+    -out /tmp/{{ vs1_name }}-saml.crt
+    -subj "/C=US/ST=State/L=City/O=Organization/CN={{ dns1_name }}"
+  delegate_to: localhost
+  args:
+    creates: /tmp/{{ vs1_name }}-saml.crt
+
+- name: Upload certificate to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}-saml.crt"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      Content-Type: "application/octet-stream"
+    body: "{{ lookup('file', '/tmp/' + vs1_name + '-saml.crt') }}"
+    status_code: [200, 201]
+    timeout: 30
+  delegate_to: localhost
+
+- name: Upload private key to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}-saml.key"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      Content-Type: "application/octet-stream"
+    body: "{{ lookup('file', '/tmp/' + vs1_name + '-saml.key') }}"
+    status_code: [200, 201]
+    timeout: 30
+  delegate_to: localhost
+
+- name: Install certificate on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-saml"
+      partition: "Common"
+      sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.crt"
+    status_code: [200, 201, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: cert_install_result
+
+- name: Install private key on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-saml"
+      partition: "Common"
+      sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.key"
+    status_code: [200, 201, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: key_install_result
+
+- name: Display certificate installation status
+  debug:
+    msg:
+      - "Certificate Status: {{ cert_install_result.status }}"
+      - "Private Key Status: {{ key_install_result.status }}"
+      - "Certificate Name: /Common/{{ vs1_name }}-saml"
+
+- name: Clean up local temporary files
+  file:
+    path: "{{ item }}"
+    state: absent
+  delegate_to: localhost
+  loop:
+    - "/tmp/{{ vs1_name }}-saml.crt"
+    - "/tmp/{{ vs1_name }}-saml.key"
