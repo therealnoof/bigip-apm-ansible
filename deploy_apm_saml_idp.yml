@@ -1,58 +1,64 @@
 ---
 ###############################################
-# F5 BIG-IP APM SAML Service Provider Deployment
-# Solution 3: SAML Authentication with Okta IDP
+# F5 BIG-IP APM SAML Identity Provider Deployment
+# Solution 4: SAML IDP with AD Authentication
 ###############################################
 #
-# This playbook deploys a complete APM SAML solution with:
-# - SAML Identity Provider connector (Okta)
-# - SAML Service Provider configuration
-# - SAML authentication access policy
-# - APM access profile
+# This playbook deploys a complete APM SAML IDP solution with:
+# - SAML Service Provider connector
+# - SAML Identity Provider service
+# - Active Directory authentication
+# - Access policy with logon page
+# - APM access profile with SSO
 # - Optional AS3 application deployment
 # - Optional GSLB/DNS configuration
 #
-# Source: Converted from solution3-create Postman collection
-# https://github.com/f5devcentral/access-solutions/blob/master/solution3/postman/solution3-create.postman_collection.json
+# Source: Converted from solution4-create Postman collection
+# https://github.com/f5devcentral/access-solutions/blob/master/solution4/postman/solution4-create.postman_collection.json
 #
 # Usage:
-#   ansible-playbook deploy_apm_saml.yml
-#   ansible-playbook deploy_apm_saml.yml --limit bigip-01
-#   ansible-playbook deploy_apm_saml.yml -e "@vars/solution3.yml"
+#   ansible-playbook deploy_apm_saml_idp.yml
+#   ansible-playbook deploy_apm_saml_idp.yml --limit bigip-01
+#   ansible-playbook deploy_apm_saml_idp.yml -e "@vars/solution4.yml"
 #
 ###############################################
 
-- name: Deploy F5 BIG-IP APM SAML Solution
+- name: Deploy F5 BIG-IP APM SAML IDP Solution
   hosts: bigip
   gather_facts: no
   connection: local
   vars_files:
-    - vars/solution3.yml
+    - vars/solution4.yml
 
   tasks:
     - name: Display deployment information
       debug:
         msg: |
           ============================================
-          APM SAML Service Provider Solution Deployment
+          APM SAML Identity Provider Solution Deployment
           ============================================
 
           Solution Name: {{ vs1_name }}
-          DNS Name: {{ dns1_name }}
+          IDP DNS Name: {{ dns1_name }}
+          SP DNS Name: {{ dns2_name }}
           Customization Type: {{ custom_type }}
 
           SAML Configuration:
-          - Service Provider Entity ID: {{ saml_sp.entity_id }}
-          - Identity Provider Entity ID: {{ saml_idp.entity_id }}
-          - SSO URI: {{ saml_idp.sso_uri }}
-          - SSO Binding: {{ saml_idp.sso_binding }}
-          - Signature Type: {{ saml_idp.signature_type }}
+          - Identity Provider Entity ID: {{ saml_idp_service.entity_id }}
+          - Service Provider Entity ID: {{ saml_sp_connector.entity_id }}
+          - ACS URL: {{ saml_sp_connector.acs_url }}
+          - Assertion Validity: {{ saml_idp_service.assertion_validity }}s
+
+          Active Directory:
+          - Domain: {{ ad_aaa_server.domain }}
+          - Domain Controllers: {{ ad_aaa_server.domain_controllers | map(attribute='name') | join(', ') }}
 
           Components to Deploy:
-          - SAML IDP Connector ({{ saml_idp.name }})
-          - SAML Service Provider ({{ saml_sp.name }})
-          - SAML Authentication Policy
-          - APM Access Profile
+          - AD Server Pool and AAA Configuration
+          - SAML SP Connector ({{ saml_sp_connector.name }})
+          - SAML IDP Service ({{ saml_idp_service.name }})
+          - Access Policy with Logon Page → AD Auth flow
+          - APM Access Profile with SSO
           {% if create_as3_application | default(false) %}
           - AS3 Virtual Server Application
           {% endif %}
@@ -80,28 +86,86 @@
         msg: "BIG-IP connectivity verified - AS3 version: {{ bigip_check.json.version | default('N/A') }}"
 
     ###############################################
-    # SAML IDP Connector Configuration (BEFORE Transaction)
+    # AD Pool and AAA Server Configuration (BEFORE Transaction)
     ###############################################
 
-    - name: Configure SAML IDP Connector (certificate + IDP connector)
-      include_tasks: tasks/saml_idp_connector.yml
-      vars:
-        transaction_id: ""  # Not in transaction
+    - name: Create AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ ad_pool.name }}"
+          partition: "Common"
+          members:
+            - name: "{{ ad_pool.members[0].address }}:{{ ad_pool.members[0].port }}"
+              address: "{{ ad_pool.members[0].address }}"
+          monitor: "{{ ad_pool.monitor }}"
+        status_code: [200, 201, 409]
+        timeout: 30
+      delegate_to: localhost
+      register: ad_pool_result
+
+    - name: Create AAA Active Directory server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ ad_aaa_server.name }}"
+          partition: "Common"
+          adminEncryptedPassword: "{{ ad_aaa_server.admin_password }}"
+          adminName: "{{ ad_aaa_server.admin_name }}"
+          domain: "{{ ad_aaa_server.domain }}"
+          pool: "{{ ad_aaa_server.pool }}"
+          timeout: {{ ad_aaa_server.timeout }}
+          groupCacheTtl: {{ ad_aaa_server.group_cache_ttl }}
+          psoCacheTtl: {{ ad_aaa_server.pso_cache_ttl }}
+          usePool: "{{ ad_aaa_server.use_pool }}"
+          locationSpecific: "{{ ad_aaa_server.location_specific }}"
+          cleanupCache: "none"
+          kdcLockoutDuration: 0
+          padata: "none"
+          domainControllers:
+            - name: "{{ ad_aaa_server.domain_controllers[0].name }}"
+              ip: "{{ ad_aaa_server.domain_controllers[0].ip }}"
+        status_code: [200, 201, 409]
+        timeout: 30
+      delegate_to: localhost
+      register: ad_aaa_result
+
+    - name: Display AD configuration status
+      debug:
+        msg:
+          - "AD Pool Status: {{ ad_pool_result.status }}"
+          - "AD AAA Server Status: {{ ad_aaa_result.status }}"
+          - "AD Domain: {{ ad_aaa_server.domain }}"
+
+    ###############################################
+    # SAML SP Connector Configuration (BEFORE Transaction)
+    ###############################################
+
+    - name: Configure SAML SP Connector
+      include_tasks: tasks/saml_sp_connector.yml
       tags:
         - saml
-        - idp
+        - sp-connector
 
     ###############################################
-    # SAML Service Provider Configuration (BEFORE Transaction)
+    # SAML IDP Service Configuration (BEFORE Transaction)
     ###############################################
 
-    - name: Configure SAML Service Provider
-      include_tasks: tasks/saml_sp.yml
-      vars:
-        transaction_id: ""  # Not in transaction
+    - name: Configure SAML IDP Service
+      include_tasks: tasks/saml_idp_service.yml
       tags:
         - saml
-        - sp
+        - idp-service
 
     ###############################################
     # Transaction Start (For Policy Objects Only)
@@ -130,14 +194,14 @@
         msg: "Created transaction ID: {{ transaction_id }}"
 
     ###############################################
-    # Access Policy with SAML Authentication (IN Transaction)
+    # Access Policy with Logon Page and AD Auth (IN Transaction)
     ###############################################
 
-    - name: Create Access Policy with SAML Authentication
-      include_tasks: tasks/access_policy_solution3.yml
+    - name: Create Access Policy with Logon Page and AD Auth
+      include_tasks: tasks/access_policy_solution4.yml
       tags:
         - policy
-        - saml-auth
+        - ad-auth
 
     ###############################################
     # Transaction Commit
@@ -195,7 +259,7 @@
     # Virtual Server via AS3 (Optional)
     ###############################################
 
-    - name: Deploy AS3 Application with SAML Profile
+    - name: Deploy AS3 Application with SAML IDP Profile
       uri:
         url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
         method: POST
@@ -211,7 +275,7 @@
             "declaration": {
               "class": "ADC",
               "schemaVersion": "3.14.0",
-              "id": "APM-SAML",
+              "id": "APM-SAML-IDP",
               "{{ partition_name }}": {
                 "class": "Tenant",
                 "{{ vs1_name }}": {
@@ -222,7 +286,6 @@
                     "virtualAddresses": ["{{ as3_config.virtual_address }}"],
                     "virtualPort": {{ as3_config.virtual_port }},
                     "serverTLS": "{{ vs1_name }}-clientssl",
-                    "pool": "{{ as3_config.pool_name }}",
                     "snat": "{{ as3_config.snat }}",
                     "profileAccess": {
                       "bigip": "/Common/{{ access_profile.name }}"
@@ -240,16 +303,6 @@
                     "class": "Certificate",
                     "certificate": {"bigip": "/Common/{{ as3_config.tls_cert_name }}"},
                     "privateKey": {"bigip": "/Common/{{ as3_config.tls_key_name }}"}
-                  },
-                  "{{ as3_config.pool_name }}": {
-                    "class": "Pool",
-                    "members": [
-                      {
-                        "serverAddresses": ["{{ as3_config.pool_members[0].split(':')[0] }}"],
-                        "servicePort": {{ as3_config.pool_members[0].split(':')[1] }}
-                      }
-                    ],
-                    "monitors": ["{{ as3_config.pool_monitor }}"]
                   }
                 }
               }
@@ -337,26 +390,29 @@
           ============================================
 
           Solution: {{ vs1_name }}
-          Access URL: https://{{ dns1_name }}
+          IDP Access URL: https://{{ dns1_name }}
 
-          SAML Configuration:
-          - Service Provider: {{ saml_sp.name }}
-          - Entity ID: {{ saml_sp.entity_id }}
-          - Identity Provider: {{ saml_idp.name }}
-          - IDP Entity ID: {{ saml_idp.entity_id }}
-          - SSO URI: {{ saml_idp.sso_uri }}
+          SAML IDP Configuration:
+          - Identity Provider: {{ saml_idp_service.name }}
+          - IDP Entity ID: {{ saml_idp_service.entity_id }}
+          - Service Provider Connector: {{ saml_sp_connector.name }}
+          - SP Entity ID: {{ saml_sp_connector.entity_id }}
+          - Assertion Validity: {{ saml_idp_service.assertion_validity }}s
+
+          Active Directory:
+          - Domain: {{ ad_aaa_server.domain }}
+          - AD Server: {{ ad_aaa_server.domain_controllers[0].name }} ({{ ad_aaa_server.domain_controllers[0].ip }})
 
           Access Policy:
           - Policy Name: {{ access_policy.name }}
           - Profile Name: {{ access_profile.name }}
           - Policy Timeout: {{ access_profile.access_policy_timeout }}s
           - Session Timeout: {{ access_profile.max_session_timeout }}s
+          - SSO Service: {{ access_profile.sso_name }}
 
           {% if create_as3_application | default(false) %}
           Virtual Server:
           - IP: {{ as3_config.virtual_address }}:{{ as3_config.virtual_port }}
-          - Pool: {{ as3_config.pool_name }}
-          - Backend Members: {{ as3_config.pool_members | join(', ') }}
           - Access Profile: /Common/{{ access_profile.name }}
           {% endif %}
 
@@ -367,21 +423,22 @@
           {% endif %}
 
           Next Steps:
-          1. Test SAML authentication at https://{{ dns1_name }}
-          2. Verify redirect to IDP (Okta) login page
-          3. Test successful SAML assertion processing
-          4. Verify access to backend application
-          5. Check APM logs at /var/log/apm for SAML events
+          1. Configure your Service Provider to trust this IDP
+          2. Test authentication at https://{{ dns1_name }}
+          3. Verify redirect to login page
+          4. Test AD credential validation
+          5. Verify SAML assertion issuance to SP
+          6. Check APM logs at /var/log/apm for SAML events
 
           Troubleshooting:
           - Review SAML assertion in APM session variables
-          - Check IDP certificate validity
-          - Verify SP entity ID matches IDP configuration
-          - Ensure DNS resolution for {{ dns1_name }}
+          - Check AD connectivity and credentials
+          - Verify SP connector configuration matches your SP
+          - Ensure DNS resolution for {{ dns1_name }} and {{ dns2_name }}
 
           Cleanup:
           To remove this deployment, run:
-            ansible-playbook delete_apm_saml.yml
+            ansible-playbook delete_apm_saml_idp.yml
 
           ============================================
       tags:

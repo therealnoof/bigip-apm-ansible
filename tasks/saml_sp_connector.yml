@@ -1,0 +1,45 @@
+---
+###############################################
+# SAML SP Connector Configuration
+# Creates a Service Provider connector for SAML federation
+###############################################
+
+- name: Create SAML SP Connector
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml-sp-connector/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ saml_sp_connector.name }}"
+      description: "{{ saml_sp_connector.description }}"
+      entityId: "{{ saml_sp_connector.entity_id }}"
+      encryptionType: "{{ saml_sp_connector.encryption_type }}"
+      signatureAlgorithm: "{{ saml_sp_connector.signature_algorithm }}"
+      spCertificate: "{{ saml_sp_connector.sp_certificate }}"
+      wantAssertionSigned: "{{ saml_sp_connector.want_assertion_signed }}"
+      wantResponseSigned: "{{ saml_sp_connector.want_response_signed }}"
+      wantAssertionEncrypted: "{{ saml_sp_connector.want_assertion_encrypted }}"
+      assertionConsumerServices:
+        - binding: "{{ saml_sp_connector.acs_binding }}"
+          index: {{ saml_sp_connector.acs_index }}
+          isDefault: "{{ saml_sp_connector.acs_is_default }}"
+          uri: "{{ saml_sp_connector.acs_url }}"
+      singleLogoutServices:
+        - binding: "{{ saml_sp_connector.slo_binding }}"
+          uriPost: "{{ saml_sp_connector.slo_url_post }}"
+          uriRedirect: "{{ saml_sp_connector.slo_url_redirect }}"
+    status_code: [200, 201, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: sp_connector_result
+
+- name: Display SAML SP Connector status
+  debug:
+    msg:
+      - "SAML SP Connector Status: {{ sp_connector_result.status }}"
+      - "SP Connector Name: {{ saml_sp_connector.name }}"
+      - "Entity ID: {{ saml_sp_connector.entity_id }}"
+      - "ACS URL: {{ saml_sp_connector.acs_url }}"

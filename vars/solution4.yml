@@ -1,0 +1,277 @@
+---
+###############################################
+# Solution 4 Variables - SAML Identity Provider with AD Authentication
+# This solution deploys BIG-IP as a SAML Identity Provider (IDP)
+###############################################
+
+# BIG-IP Connection Details
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+bigip_validate_certs: no
+
+# Solution name (used as prefix for all objects)
+vs1_name: "idp"
+
+# DNS and domain configuration
+dns1_name: "idp.acme.com"  # SAML Identity Provider FQDN
+dns2_name: "sp.acme.com"   # SAML Service Provider FQDN
+path_name: "solution4"
+partition_name: "solution4"
+
+# Customization type (modern, standard)
+custom_type: "modern"
+
+# Feature flags
+create_as3_application: true
+create_gslb: false
+
+# Active Directory Configuration
+ad_pool:
+  name: "{{ vs1_name }}-ad-pool"
+  members:
+    - address: "10.1.20.7"
+      port: 0
+  monitor: "/Common/gateway_icmp"
+
+ad_aaa_server:
+  name: "{{ vs1_name }}-ad-servers"
+  domain: "f5lab.local"
+  admin_name: "admin"
+  admin_password: "admin"
+  pool: "/Common/{{ vs1_name }}-ad-pool"
+  timeout: 15
+  group_cache_ttl: 30
+  pso_cache_ttl: 30
+  use_pool: "enabled"
+  location_specific: "true"
+  domain_controllers:
+    - name: "dc1.f5lab.local"
+      ip: "10.1.20.7"
+
+# SAML Service Provider Connector Configuration
+# This configures the external SP that will consume SAML assertions from this IDP
+saml_sp_connector:
+  name: "{{ dns2_name }}"
+  entity_id: "https://{{ dns2_name }}"
+  description: "SAML Service Provider Connector"
+
+  # Certificate configuration
+  sp_certificate: "/Common/acme.com-wildcard"  # SP's certificate for signature validation
+
+  # Encryption settings
+  encryption_type: "aes128"
+  signature_algorithm: "rsa-sha256"
+
+  # Assertion Consumer Service
+  acs_url: "https://{{ dns2_name }}/saml/sp/profile/post/acs"
+  acs_binding: "http-post"
+  acs_index: 0
+  acs_is_default: "true"
+
+  # Single Logout configuration
+  slo_binding: "http-post"
+  slo_url_post: "https://{{ dns2_name }}/saml/sp/profile/post/slo"
+  slo_url_redirect: "https://{{ dns2_name }}/saml/sp/profile/redirect/slo"
+
+  # Assertion requirements
+  want_assertion_signed: "true"
+  want_response_signed: "true"
+  want_assertion_encrypted: "false"
+
+# SAML Identity Provider Service Configuration
+# This is the IDP service that issues SAML assertions
+saml_idp_service:
+  name: "{{ dns1_name }}"
+  entity_id: "https://{{ dns1_name }}"
+  description: "SAML Identity Provider Service"
+
+  # IDP host configuration
+  idp_host: "{{ dns1_name }}"
+  idp_scheme: "https"
+
+  # Certificate configuration
+  # Using default BIG-IP self-signed certificate
+  # To use your own certificate, change these to match your FQDN certificate name on BIG-IP
+  # Example: signature_key: "/Common/acme.com-wildcard" (certificate must exist in /Common partition)
+  signature_key: "/Common/default"
+  idp_certificate: "/Common/default"
+
+  # Encryption settings
+  encryption_type: "aes128"
+  key_transport_algorithm: "rsa-oaep"
+
+  # Assertion configuration
+  assertion_validity: 600  # seconds
+  subject_type: "email-address"
+  subject_value: "%{session.logon.last.logonname}"
+  auth_context_method: "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+
+  # SAML profiles
+  saml_profiles: "web-browser-sso"
+  log_level: "notice"
+
+  # Service Provider connector reference
+  sp_connector: "/Common/{{ dns2_name }}"
+
+  # Attribute mapping
+  attributes:
+    - name: "name"
+      type: "username"
+      value: "sAMAccountName"
+
+# APM Access Policy Settings
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  type: "access-policy"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+
+# APM Access Profile Settings
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  accept_languages: ["en"]
+  default_language: "en"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  max_in_progress_sessions: 128
+  max_session_timeout: 604800  # 7 days
+  min_failure_delay: 2
+  httponly_cookie: "false"
+  persistent_cookie: "false"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  secure_cookie: "true"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  log_settings: ["/Common/default-log-setting"]
+
+  # SSO configuration - reference to SAML IDP service
+  sso_name: "/Common/{{ dns1_name }}"
+
+# Customization Groups
+customization_groups:
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+# Policy Agents
+policy_agents:
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny_ag"
+    customization_group: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow_ag"
+
+  logon_page:
+    name: "{{ vs1_name }}-psp_act_logon_page_ag"
+    type: "form-based"
+    citrix_client_auth: "domain-only"
+    http_401_auth_level: "none"
+    field_types: ["text", "password", "none", "none", "none"]
+    post_var_names: ["username", "password", "field3", "field4", "field5"]
+    session_var_names: ["username", "password", "field3", "field4", "field5"]
+
+  ad_auth:
+    name: "{{ vs1_name }}-psp_act_active_directory_auth_ag"
+    server: "/Common/{{ vs1_name }}-ad-servers"
+    auth_max_logon_attempts: 3
+    max_password_reset_attempts: 3
+    fetch_nested_groups: "false"
+    show_extended_error: "false"
+    upn: "false"
+
+# Policy Items
+policy_items:
+  start:
+    name: "{{ vs1_name }}-psp_ent"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    next_item: "/Common/{{ vs1_name }}-psp_act_logon_page"
+
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  logon_page:
+    name: "{{ vs1_name }}-psp_act_logon_page"
+    caption: "Logon Page"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "logon-page"
+    next_item: "/Common/{{ vs1_name }}-psp_act_active_directory_auth"
+
+  ad_auth:
+    name: "{{ vs1_name }}-psp_act_active_directory_auth"
+    caption: "AD Auth"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-active-directory"
+    # Branching rules
+    success_expression: 'expr {[mcget {session.ad.last.authresult}] == 1}'
+    success_next_item: "/Common/{{ vs1_name }}-psp_end_allow"
+    fallback_next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+
+# AS3 Virtual Server Configuration
+as3_config:
+  virtual_address: "10.1.10.140"
+  virtual_port: 443
+
+  # SSL/TLS Configuration
+  # Using default BIG-IP self-signed certificate
+  # To use your own certificate, change these to match your FQDN certificate name on BIG-IP
+  # Example: tls_cert_name: "acme.com-wildcard" (certificate must exist in /Common partition)
+  tls_cert_name: "default.crt"
+  tls_key_name: "default.key"
+
+  # SNAT configuration
+  snat: "auto"
+
+# GSLB Configuration (optional)
+gslb_config:
+  wideip_name: "{{ dns1_name }}"
+  pool_name: "{{ vs1_name }}-pool"
+  pool_members:
+    - ip: "10.1.10.140"
+      port: 443

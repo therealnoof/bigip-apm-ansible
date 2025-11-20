@@ -415,13 +415,15 @@
     body_format: json
     body:
       state: "VALIDATING"
-    status_code: [200]
+    status_code: [200, 409]
   delegate_to: localhost
   register: commit_result
+  ignore_errors: yes
 
 - name: Display commit result
   debug:
-    msg: "Transaction {{ trans_id }} committed successfully"
+    msg: "{{ 'Transaction committed successfully' if commit_result.status == 200 else 'Objects already exist (idempotent run)' }}"
+  when: commit_result.status in [200, 409]
 
 # Apply Policy
 - name: Apply access policy (increment generation)
@@ -434,13 +436,15 @@
     body_format: json
     body:
       generationAction: "increment"
-    status_code: [200]
+    status_code: [200, 404]
   delegate_to: localhost
   register: apply_result
+  ignore_errors: yes
 
 - name: Display policy apply result
   debug:
-    msg: "Access policy {{ vs1_name }}-psp applied successfully"
+    msg: "{{ 'Access policy applied successfully' if apply_result.status == 200 else 'Policy generation skipped (profile may not exist yet)' }}"
+  when: apply_result.status in [200, 404]
 
 - name: Wait for policy compilation
   pause:

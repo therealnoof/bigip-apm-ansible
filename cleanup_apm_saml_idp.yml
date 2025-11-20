@@ -1,0 +1,263 @@
+---
+###############################################
+# F5 BIG-IP APM SAML IDP Solution Cleanup (Automated)
+# Solution 4: SAML Identity Provider with AD Authentication
+###############################################
+#
+# Purpose: Automated cleanup without confirmation prompts
+# Use this for CI/CD pipelines or automated teardown
+#
+# IMPORTANT: This playbook deletes all configured objects
+# WITHOUT confirmation prompts
+#
+# Usage:
+#   ansible-playbook cleanup_apm_saml_idp.yml
+#
+###############################################
+
+- name: Cleanup F5 BIG-IP APM SAML IDP Solution (Automated)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+  vars_files:
+    - vars/solution4.yml
+
+  tasks:
+    - name: Display cleanup banner
+      debug:
+        msg: |
+          ============================================
+          APM SAML IDP Solution Automated Cleanup
+          ============================================
+          Removing all components for: {{ vs1_name }}
+          Target: {{ bigip_mgmt }}
+          ============================================
+
+    - name: Verify BIG-IP connectivity
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/info"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200]
+        timeout: 30
+      delegate_to: localhost
+      register: bigip_check
+
+    ###############################################
+    # GSLB Cleanup
+    ###############################################
+
+    - name: Delete GSLB Wide-IP
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}-gslb"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: gslb_delete
+      ignore_errors: yes
+      when: create_gslb | default(false)
+
+    ###############################################
+    # AS3 Application Cleanup
+    ###############################################
+
+    - name: Delete AS3 application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: as3_delete
+      ignore_errors: yes
+      when: create_as3_application | default(false)
+
+    ###############################################
+    # APM Objects Cleanup
+    ###############################################
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ access_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: profile_delete
+      ignore_errors: yes
+
+    - name: Delete policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      loop:
+        - "{{ policy_items.start.name }}"
+        - "{{ policy_items.logon_page.name }}"
+        - "{{ policy_items.ad_auth.name }}"
+        - "{{ policy_items.allow_ending.name }}"
+        - "{{ policy_items.deny_ending.name }}"
+      ignore_errors: yes
+
+    - name: Delete policy agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/{{ item.type }}/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      loop:
+        - { type: "logon-page", name: "{{ policy_agents.logon_page.name }}" }
+        - { type: "aaa-active-directory", name: "{{ policy_agents.ad_auth.name }}" }
+        - { type: "ending-allow", name: "{{ policy_agents.allow_ending.name }}" }
+        - { type: "ending-deny", name: "{{ policy_agents.deny_ending.name }}" }
+      ignore_errors: yes
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ access_policy.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: policy_delete
+      ignore_errors: yes
+
+    - name: Delete customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}-psp_{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      loop:
+        - logout
+        - eps
+        - errormap
+        - framework_installation
+        - general_ui
+        - end_deny_ag
+      ignore_errors: yes
+
+    ###############################################
+    # SAML Components Cleanup
+    ###############################################
+
+    - name: Delete SAML IDP Service
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml/~Common~{{ saml_idp_service.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: saml_idp_delete
+      ignore_errors: yes
+
+    - name: Delete SAML SP Connector
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml-sp-connector/~Common~{{ saml_sp_connector.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: saml_sp_connector_delete
+      ignore_errors: yes
+
+    ###############################################
+    # Active Directory Components Cleanup
+    ###############################################
+
+    - name: Delete AAA Active Directory
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ ad_aaa_server.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: ad_aaa_delete
+      ignore_errors: yes
+
+    - name: Delete AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ ad_pool.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: ad_pool_delete
+      ignore_errors: yes
+
+    - name: Delete AD server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ ad_pool.members[0].address }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ bigip_validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: node_delete
+      ignore_errors: yes
+
+    ###############################################
+    # Cleanup Summary
+    ###############################################
+
+    - name: Display cleanup summary
+      debug:
+        msg: |
+          ============================================
+          Cleanup Complete!
+          ============================================
+
+          Solution {{ vs1_name }} cleanup results:
+
+          AS3 Application: {{ 'Deleted' if as3_delete.status == 200 else 'Not found' }}
+          Access Profile: {{ 'Deleted' if profile_delete.status == 200 else 'Not found' }}
+          Access Policy: {{ 'Deleted' if policy_delete.status == 200 else 'Not found' }}
+          SAML IDP Service: {{ 'Deleted' if saml_idp_delete.status == 200 else 'Not found' }}
+          SAML SP Connector: {{ 'Deleted' if saml_sp_connector_delete.status == 200 else 'Not found' }}
+          AAA AD Server: {{ 'Deleted' if ad_aaa_delete.status == 200 else 'Not found' }}
+          AD Pool: {{ 'Deleted' if ad_pool_delete.status == 200 else 'Not found' }}
+          AD Node: {{ 'Deleted' if node_delete.status == 200 else 'Not found' }}
+
+          ============================================

@@ -1,0 +1,51 @@
+---
+###############################################
+# SAML IDP Service Configuration
+# Creates the SAML Identity Provider service that issues assertions
+###############################################
+
+- name: Create SAML IDP Service
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ saml_idp_service.name }}"
+      description: "{{ saml_idp_service.description }}"
+      entityId: "{{ saml_idp_service.entity_id }}"
+      idpHost: "{{ saml_idp_service.idp_host }}"
+      idpScheme: "{{ saml_idp_service.idp_scheme }}"
+      idpSignKey: "{{ saml_idp_service.signature_key }}"
+      idpCertificate: "{{ saml_idp_service.idp_certificate }}"
+      encryptionType: "{{ saml_idp_service.encryption_type }}"
+      keyTransportAlgorithm: "{{ saml_idp_service.key_transport_algorithm }}"
+      assertionValidity: {{ saml_idp_service.assertion_validity }}
+      subjectType: "{{ saml_idp_service.subject_type }}"
+      subjectValue: "{{ saml_idp_service.subject_value }}"
+      authContextMethod: "{{ saml_idp_service.auth_context_method }}"
+      samlProfiles: "{{ saml_idp_service.saml_profiles }}"
+      logLevel: "{{ saml_idp_service.log_level }}"
+      spConnectors:
+        - "{{ saml_idp_service.sp_connector }}"
+      samlAttributes:
+        {% for attr in saml_idp_service.attributes %}
+        - name: "{{ attr.name }}"
+          type: "{{ attr.type }}"
+          value: "{{ attr.value }}"
+        {% endfor %}
+    status_code: [200, 201, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: idp_service_result
+
+- name: Display SAML IDP Service status
+  debug:
+    msg:
+      - "SAML IDP Service Status: {{ idp_service_result.status }}"
+      - "IDP Service Name: {{ saml_idp_service.name }}"
+      - "Entity ID: {{ saml_idp_service.entity_id }}"
+      - "IDP Host: {{ saml_idp_service.idp_host }}"
+      - "Assertion Validity: {{ saml_idp_service.assertion_validity }}s"
