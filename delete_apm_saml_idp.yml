@@ -201,6 +201,7 @@
         - framework_installation
         - general_ui
         - end_deny_ag
+        - act_logon_page_ag
       register: customization_delete
 
     ###############################################

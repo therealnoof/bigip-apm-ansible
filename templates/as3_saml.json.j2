@@ -1,0 +1,58 @@
+{
+  "class": "ADC",
+  "action": "deploy",
+  "persist": true,
+  "declaration": {
+    "class": "ADC",
+    "schemaVersion": "3.14.0",
+    "id": "APM-SAML",
+    "{{ partition_name }}": {
+      "class": "Tenant",
+      "{{ vs1_name }}": {
+        "class": "Application",
+        "template": "generic",
+        "{{ vs1_name }}": {
+          "class": "Service_HTTPS",
+          "virtualAddresses": ["{{ as3_config.virtual_address }}"],
+          "virtualPort": {{ as3_config.virtual_port }},
+          "serverTLS": "{{ vs1_name }}-clientssl",
+          "pool": "{{ as3_config.pool_name }}",
+          "snat": "{{ as3_config.snat }}",
+          "profileAccess": {
+            "bigip": "/Common/{{ access_profile.name }}"
+          }
+        },
+        "{{ vs1_name }}-clientssl": {
+          "class": "TLS_Server",
+          "certificates": [
+            {
+              "certificate": "tlsserver_local_cert"
+            }
+          ]
+        },
+        "tlsserver_local_cert": {
+          "class": "Certificate",
+          "certificate": {
+            "bigip": "/Common/{{ as3_config.tls_cert_name }}"
+          },
+          "privateKey": {
+            "bigip": "/Common/{{ as3_config.tls_key_name }}"
+          }
+        },
+        "{{ as3_config.pool_name }}": {
+          "class": "Pool",
+          "members": [
+            {% for member in as3_config.pool_members %}
+            {% set parts = member.split(':') %}
+            {
+              "serverAddresses": ["{{ parts[0] }}"],
+              "servicePort": {{ parts[1] }}
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+          ],
+          "monitors": ["{{ as3_config.pool_monitor }}"]
+        }
+      }
+    }
+  }
+}

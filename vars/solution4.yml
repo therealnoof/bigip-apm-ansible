@@ -21,7 +21,8 @@ path_name: "solution4"
 partition_name: "solution4"
 
 # Customization type (modern, standard)
-custom_type: "modern"
+# Note: Using "standard" for compatibility - "modern" may not exist on all BIG-IP versions
+custom_type: "standard"
 
 # Feature flags
 create_as3_application: true
@@ -163,7 +164,12 @@ access_profile:
   sso_name: "/Common/{{ dns1_name }}"
 
 # Customization Groups
+# Note: Order matters! Deny ending must be first per F5 API requirements
 customization_groups:
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
   - name: "{{ vs1_name }}-psp_logout"
     type: "logout"
     source: "/Common/{{ custom_type }}"
@@ -184,8 +190,8 @@ customization_groups:
     type: "general-ui"
     source: "/Common/{{ custom_type }}"
 
-  - name: "{{ vs1_name }}-psp_end_deny_ag"
-    type: "logout"
+  - name: "{{ vs1_name }}-psp_act_logon_page_ag"
+    type: "logon"
     source: "/Common/{{ custom_type }}"
 
 # Policy Agents

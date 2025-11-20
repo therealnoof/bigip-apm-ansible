@@ -54,6 +54,23 @@
     timeout: 30
   delegate_to: localhost
 
+- name: Install private key on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-saml"
+      partition: "Common"
+      sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.key"
+    status_code: [200, 201, 400, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: key_install_result
+
 - name: Install certificate on BIG-IP
   uri:
     url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
@@ -67,27 +84,11 @@
       partition: "Common"
       commonName: "{{ dns1_name }}"
       sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.crt"
-    status_code: [200, 201, 409]
+      key: "/Common/{{ vs1_name }}-saml"
+    status_code: [200, 201, 400, 409]
     timeout: 30
   delegate_to: localhost
   register: cert_install_result
-
-- name: Install private key on BIG-IP
-  uri:
-    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key"
-    method: POST
-    user: "{{ bigip_username }}"
-    password: "{{ bigip_password }}"
-    validate_certs: "{{ bigip_validate_certs }}"
-    body_format: json
-    body:
-      name: "{{ vs1_name }}-saml"
-      partition: "Common"
-      sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.key"
-    status_code: [200, 201, 409]
-    timeout: 30
-  delegate_to: localhost
-  register: key_install_result
 
 - name: Display certificate installation status
   debug:

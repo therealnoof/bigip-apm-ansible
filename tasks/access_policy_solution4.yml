@@ -33,6 +33,23 @@
 # Policy Agents
 ###############################################
 
+- name: Create allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_agents.allow_ending.name }}"
+      partition: "Common"
+    status_code: [200, 201, 409]
+    timeout: 30
+  delegate_to: localhost
+
 - name: Create deny ending agent
   uri:
     url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
@@ -51,23 +68,6 @@
     timeout: 30
   delegate_to: localhost
 
-- name: Create allow ending agent
-  uri:
-    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
-    method: POST
-    user: "{{ bigip_username }}"
-    password: "{{ bigip_password }}"
-    validate_certs: "{{ bigip_validate_certs }}"
-    headers:
-      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
-    body_format: json
-    body:
-      name: "{{ policy_agents.allow_ending.name }}"
-      partition: "Common"
-    status_code: [200, 201, 409]
-    timeout: 30
-  delegate_to: localhost
-
 - name: Create logon page agent
   uri:
     url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/logon-page/"
@@ -81,6 +81,7 @@
     body:
       name: "{{ policy_agents.logon_page.name }}"
       partition: "Common"
+      customizationGroup: "/Common/{{ policy_agents.logon_page.name }}"
       type: "{{ policy_agents.logon_page.type }}"
       citrixClientAuth: "{{ policy_agents.logon_page.citrix_client_auth }}"
       http401AuthLevel: "{{ policy_agents.logon_page.http_401_auth_level }}"
@@ -121,6 +122,7 @@
       maxPasswordResetAttempts: "{{ policy_agents.ad_auth.max_password_reset_attempts }}"
       fetchNestedGroups: "{{ policy_agents.ad_auth.fetch_nested_groups }}"
       showExtendedError: "{{ policy_agents.ad_auth.show_extended_error }}"
+      type: "auth"
       upn: "{{ policy_agents.ad_auth.upn }}"
     status_code: [200, 201, 409]
     timeout: 30
@@ -145,7 +147,9 @@
       partition: "Common"
       accessPolicy: "/Common/{{ access_policy.name }}"
       agents:
-        - "/Common/{{ policy_agents.deny_ending.name }}"
+        - name: "{{ policy_agents.deny_ending.name }}"
+          partition: "Common"
+          type: "{{ policy_items.deny_ending.agent_type }}"
       caption: "{{ policy_items.deny_ending.caption }}"
       color: "{{ policy_items.deny_ending.color }}"
       itemType: "{{ policy_items.deny_ending.item_type }}"
@@ -168,7 +172,9 @@
       partition: "Common"
       accessPolicy: "/Common/{{ access_policy.name }}"
       agents:
-        - "/Common/{{ policy_agents.allow_ending.name }}"
+        - name: "{{ policy_agents.allow_ending.name }}"
+          partition: "Common"
+          type: "{{ policy_items.allow_ending.agent_type }}"
       caption: "{{ policy_items.allow_ending.caption }}"
       color: "{{ policy_items.allow_ending.color }}"
       itemType: "{{ policy_items.allow_ending.item_type }}"
@@ -191,7 +197,9 @@
       partition: "Common"
       accessPolicy: "/Common/{{ access_policy.name }}"
       agents:
-        - "/Common/{{ policy_agents.ad_auth.name }}"
+        - name: "{{ policy_agents.ad_auth.name }}"
+          partition: "Common"
+          type: "{{ policy_items.ad_auth.agent_type }}"
       caption: "{{ policy_items.ad_auth.caption }}"
       color: "{{ policy_items.ad_auth.color }}"
       itemType: "{{ policy_items.ad_auth.item_type }}"
@@ -220,7 +228,9 @@
       partition: "Common"
       accessPolicy: "/Common/{{ access_policy.name }}"
       agents:
-        - "/Common/{{ policy_agents.logon_page.name }}"
+        - name: "{{ policy_agents.logon_page.name }}"
+          partition: "Common"
+          type: "{{ policy_items.logon_page.agent_type }}"
       caption: "{{ policy_items.logon_page.caption }}"
       color: "{{ policy_items.logon_page.color }}"
       itemType: "{{ policy_items.logon_page.item_type }}"
