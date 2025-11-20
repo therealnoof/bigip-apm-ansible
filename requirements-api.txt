@@ -1,0 +1,46 @@
+# F5 BIG-IP APM API Service Requirements
+
+# FastAPI and server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# HTTP client
+httpx==0.25.1
+requests==2.31.0
+
+# Async support
+anyio==4.0.0
+
+# Ansible integration (optional)
+ansible==7.5.0
+ansible-runner==2.3.4
+
+# Data validation
+python-multipart==0.0.6
+
+# Logging
+python-json-logger==2.0.7
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Database (if needed)
+# sqlalchemy==2.0.23
+# alembic==1.12.1
+
+# Redis (for production caching)
+# redis==5.0.1
+# celery==5.3.4  # For async task queue
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.1
+
+# Code quality
+black==23.11.0
+flake8==6.1.0
+mypy==1.7.0
