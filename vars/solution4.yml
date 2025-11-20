@@ -61,7 +61,7 @@ saml_sp_connector:
   # Using default BIG-IP self-signed certificate
   # To use your own certificate, change this to match your SP's certificate name on BIG-IP
   # Example: sp_certificate: "/Common/acme.com-wildcard" (certificate must exist in /Common partition)
-  sp_certificate: "/Common/default"  # SP's certificate for signature validation
+  sp_certificate: "/Common/default.crt"  # SP's certificate for signature validation
 
   # Encryption settings
   encryption_type: "aes128"
@@ -98,8 +98,8 @@ saml_idp_service:
   # Using default BIG-IP self-signed certificate
   # To use your own certificate, change these to match your FQDN certificate name on BIG-IP
   # Example: signature_key: "/Common/acme.com-wildcard" (certificate must exist in /Common partition)
-  signature_key: "/Common/default"
-  idp_certificate: "/Common/default"
+  signature_key: "/Common/default.crt"
+  idp_certificate: "/Common/default.crt"
 
   # Encryption settings
   encryption_type: "aes128"
