@@ -58,7 +58,10 @@ saml_sp_connector:
   description: "SAML Service Provider Connector"
 
   # Certificate configuration
-  sp_certificate: "/Common/acme.com-wildcard"  # SP's certificate for signature validation
+  # Using default BIG-IP self-signed certificate
+  # To use your own certificate, change this to match your SP's certificate name on BIG-IP
+  # Example: sp_certificate: "/Common/acme.com-wildcard" (certificate must exist in /Common partition)
+  sp_certificate: "/Common/default"  # SP's certificate for signature validation
 
   # Encryption settings
   encryption_type: "aes128"
