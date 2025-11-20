@@ -15,13 +15,14 @@ SSL Verification: Disabled for lab (enable in production)
 1. [System & Connectivity](#system--connectivity)
 2. [Transaction Management](#transaction-management)
 3. [AAA Authentication](#aaa-authentication)
-4. [Network & Tunnels](#network--tunnels)
-5. [APM Profiles & Policies](#apm-profiles--policies)
-6. [Policy Items & Agents](#policy-items--agents)
-7. [Customization Groups](#customization-groups)
-8. [Resources](#resources)
-9. [Application Services (AS3)](#application-services-as3)
-10. [GSLB/DNS](#gslbdns)
+4. [SAML SSO Configuration](#saml-sso-configuration)
+5. [Network & Tunnels](#network--tunnels)
+6. [APM Profiles & Policies](#apm-profiles--policies)
+7. [Policy Items & Agents](#policy-items--agents)
+8. [Customization Groups](#customization-groups)
+9. [Resources](#resources)
+10. [Application Services (AS3)](#application-services-as3)
+11. [GSLB/DNS](#gslbdns)
 
 ---
 
@@ -157,6 +158,141 @@ Content-Type: application/json
   "timeout": 15,
   "usePool": "enabled",
   "poolName": "/Common/solution1-ad-pool"
+}
+```
+
+---
+
+## SAML SSO Configuration
+
+### Upload IDP Certificate (Solution 3)
+```http
+POST /mgmt/shared/file-transfer/uploads/{certificate_name}.crt
+Content-Type: application/octet-stream
+Content-Range: 0-{size-1}/{size}
+
+{certificate_content}
+```
+
+### Install IDP Certificate (Solution 3)
+```http
+POST /mgmt/tm/sys/crypto/cert
+Content-Type: application/json
+
+{
+  "name": "solution3-idp",
+  "partition": "Common",
+  "sourcePath": "file:/var/config/rest/downloads/solution3-idp.crt"
+}
+```
+
+### Create SAML IDP Connector (Solution 3 - Service Provider)
+```http
+POST /mgmt/tm/apm/sso/saml-idp-connector
+Content-Type: application/json
+
+{
+  "name": "solution3-sso",
+  "partition": "Common",
+  "entityId": "http://www.okta.com/exkafm6qvkEv6UK0d4x6",
+  "ssoUri": "https://dev-818899.okta.com/app/f5dev818899_spacmecom_1/exkafm6qvkEv6UK0d4x6/sso/saml",
+  "ssoBinding": "http-post",
+  "sloBinding": "http-post",
+  "signatureType": "rsa-sha256",
+  "idpCertificate": "/Common/solution3-idp"
+}
+```
+
+### Create SAML Service Provider (Solution 3)
+```http
+POST /mgmt/tm/apm/sso/saml
+Content-Type: application/json
+
+{
+  "name": "sp.acme.com-sp",
+  "partition": "Common",
+  "entityId": "https://sp.acme.com",
+  "spHost": "sp.acme.com",
+  "spScheme": "https",
+  "assertionConsumerBinding": "http-post",
+  "idpConnectors": ["/Common/solution3-sso"]
+}
+```
+
+### Create SAML SP Connector (Solution 4 - Identity Provider)
+```http
+POST /mgmt/tm/apm/sso/saml-sp-connector
+Content-Type: application/json
+
+{
+  "name": "sp.acme.com",
+  "partition": "Common",
+  "entityId": "https://sp.acme.com",
+  "encryptionType": "aes128",
+  "signatureAlgorithm": "rsa-sha256",
+  "spCertificate": "/Common/acme.com-wildcard",
+  "wantAssertionSigned": "true",
+  "wantResponseSigned": "true",
+  "assertionConsumerServices": [
+    {
+      "binding": "http-post",
+      "index": 0,
+      "isDefault": "true",
+      "uri": "https://sp.acme.com/saml/sp/profile/post/acs"
+    }
+  ],
+  "singleLogoutServices": [
+    {
+      "binding": "http-post",
+      "uriPost": "https://sp.acme.com/saml/sp/profile/post/slo",
+      "uriRedirect": "https://sp.acme.com/saml/sp/profile/redirect/slo"
+    }
+  ]
+}
+```
+
+### Create SAML IDP Service (Solution 4)
+```http
+POST /mgmt/tm/apm/sso/saml
+Content-Type: application/json
+
+{
+  "name": "idp.acme.com",
+  "partition": "Common",
+  "entityId": "https://idp.acme.com",
+  "idpHost": "idp.acme.com",
+  "idpScheme": "https",
+  "idpSignKey": "/Common/default",
+  "idpCertificate": "/Common/default",
+  "encryptionType": "aes128",
+  "keyTransportAlgorithm": "rsa-oaep",
+  "assertionValidity": 600,
+  "subjectType": "email-address",
+  "subjectValue": "%{session.logon.last.logonname}",
+  "authContextMethod": "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
+  "samlProfiles": "web-browser-sso",
+  "spConnectors": ["/Common/sp.acme.com"],
+  "samlAttributes": [
+    {
+      "name": "name",
+      "type": "username",
+      "value": "sAMAccountName"
+    }
+  ]
+}
+```
+
+### Create SAML Auth Agent (Solution 3)
+```http
+POST /mgmt/tm/apm/policy/agent/aaa-saml
+Content-Type: application/json
+X-F5-REST-Coordination-Id: {transId}
+
+{
+  "name": "solution3-psp_act_saml_auth_ag",
+  "partition": "Common",
+  "server": "/Common/sp.acme.com-sp",
+  "forceAuthn": "use-aaa-server-setting"
 }
 ```
 
@@ -608,6 +744,12 @@ DELETE /mgmt/tm/apm/aaa/active-directory/~Common~solution1-ad-servers
 DELETE /mgmt/tm/ltm/pool/~Common~solution1-ad-pool
 DELETE /mgmt/tm/ltm/node/~Common~10.1.20.7
 DELETE /mgmt/tm/net/tunnels/tunnel/~Common~solution1-tunnel
+DELETE /mgmt/tm/apm/sso/saml/~Common~sp.acme.com-sp
+DELETE /mgmt/tm/apm/sso/saml-idp-connector/~Common~solution3-sso
+DELETE /mgmt/tm/apm/sso/saml-sp-connector/~Common~sp.acme.com
+DELETE /mgmt/tm/apm/sso/saml/~Common~idp.acme.com
+DELETE /mgmt/tm/sys/crypto/cert/~Common~solution3-idp
+DELETE /mgmt/tm/sys/file/ssl-cert/~Common~solution3-idp.crt
 ```
 
 **Note:** Use tilde `~` instead of forward slash `/` in URL paths for partitions.
@@ -676,4 +818,4 @@ Replace `/` with `~` in resource paths:
 ---
 
 **Generated from:** `bigip-apm-ansible` project
-**Last Updated:** 2025-11-19
+**Last Updated:** 2025-11-20

@@ -6,15 +6,17 @@ Detailed mapping of Postman REST API calls to Ansible tasks.
 
 | Metric | Count |
 |--------|-------|
-| Total Postman Requests | 60 |
-| Converted to Ansible | 54 |
+| Total Postman Requests | 80+ |
+| Converted to Ansible | 70+ |
 | Initialization/Check Requests | 6 |
 | AAA AD Configuration | 3 |
+| SAML Configuration (Solutions 3 & 4) | 8 |
 | Connectivity Profile | 3 |
 | Network Access | 3 |
 | Webtop | 4 |
-| Access Policy (with transaction) | 21 |
-| AS3 Deployment | 4 |
+| Portal Resources (Solution 2) | 5 |
+| Access Policy (with transaction) | 25+ |
+| AS3 Deployment | 6 |
 | GSLB Configuration | 16 |
 
 ## Conversion Methodology
@@ -169,9 +171,186 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/aaa/active-directory
 
 ---
 
-### 2. Connectivity Profile
+### 2. SAML SSO Configuration
 
-#### 2.1 Create PPP Tunnel
+#### 2.1 Upload IDP Certificate (Solution 3)
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/shared/file-transfer/uploads/{{CERT_NAME}}.crt
+Content-Type: application/octet-stream
+Content-Range: 0-{size-1}/{size}
+
+{certificate_content}
+```
+
+**Ansible:**
+```yaml
+# tasks/saml_idp_connector.yml
+- name: Upload IDP Certificate File
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ saml_idp.certificate_name }}.crt"
+    method: POST
+    body: "{{ cert_content_prepared }}"
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Range: "0-{{ cert_length - 1 }}/{{ cert_length }}"
+    status_code: [200, 201]
+```
+
+**File:** `tasks/saml_idp_connector.yml` (lines 29-42)
+
+#### 2.2 Create SAML IDP Connector (Solution 3)
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/sso/saml-idp-connector
+
+{
+  "name": "{{VS1_NAME}}-sso",
+  "entityId": "http://www.okta.com/exkafm6qvkEv6UK0d4x6",
+  "ssoUri": "https://dev-818899.okta.com/.../sso/saml",
+  "ssoBinding": "http-post",
+  "signatureType": "rsa-sha256",
+  "idpCertificate": "/Common/{{CERT_NAME}}"
+}
+```
+
+**Ansible:**
+```yaml
+- name: Create SAML IDP Connector
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml-idp-connector"
+    method: POST
+    body:
+      name: "{{ saml_idp.name }}"
+      entityId: "{{ saml_idp.entity_id }}"
+      ssoUri: "{{ saml_idp.sso_uri }}"
+      ssoBinding: "{{ saml_idp.sso_binding }}"
+      signatureType: "{{ saml_idp.signature_type }}"
+      idpCertificate: "/Common/{{ saml_idp.certificate_name }}"
+    status_code: [200, 201, 409]
+```
+
+**File:** `tasks/saml_idp_connector.yml` (lines 86-104)
+
+#### 2.3 Create SAML Service Provider (Solution 3)
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/sso/saml
+
+{
+  "name": "{{DNS1_NAME}}-sp",
+  "entityId": "https://{{DNS1_NAME}}",
+  "spHost": "{{DNS1_NAME}}",
+  "idpConnectors": ["/Common/{{VS1_NAME}}-sso"]
+}
+```
+
+**Ansible:**
+```yaml
+- name: Create SAML Service Provider
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml"
+    method: POST
+    body:
+      name: "{{ saml_sp.name }}"
+      entityId: "{{ saml_sp.entity_id }}"
+      spHost: "{{ saml_sp.sp_host }}"
+      idpConnectors: ["/Common/{{ saml_idp.name }}"]
+    status_code: [200, 201, 409]
+```
+
+**File:** `tasks/saml_sp.yml` (lines 7-32)
+
+#### 2.4 Create SAML SP Connector (Solution 4)
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/sso/saml-sp-connector
+
+{
+  "name": "{{DNS2_NAME}}",
+  "entityId": "https://{{DNS2_NAME}}",
+  "encryptionType": "aes128",
+  "signatureAlgorithm": "rsa-sha256",
+  "assertionConsumerServices": [
+    {
+      "binding": "http-post",
+      "uri": "https://{{DNS2_NAME}}/saml/sp/profile/post/acs"
+    }
+  ]
+}
+```
+
+**Ansible:**
+```yaml
+- name: Create SAML SP Connector
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml-sp-connector/"
+    method: POST
+    body:
+      name: "{{ saml_sp_connector.name }}"
+      entityId: "{{ saml_sp_connector.entity_id }}"
+      encryptionType: "{{ saml_sp_connector.encryption_type }}"
+      signatureAlgorithm: "{{ saml_sp_connector.signature_algorithm }}"
+      assertionConsumerServices:
+        - binding: "{{ saml_sp_connector.acs_binding }}"
+          uri: "{{ saml_sp_connector.acs_url }}"
+    status_code: [200, 201, 409]
+```
+
+**File:** `tasks/saml_sp_connector.yml` (lines 7-35)
+
+#### 2.5 Create SAML IDP Service (Solution 4)
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/sso/saml
+
+{
+  "name": "{{DNS1_NAME}}",
+  "entityId": "https://{{DNS1_NAME}}",
+  "idpHost": "{{DNS1_NAME}}",
+  "idpSignKey": "/Common/default",
+  "assertionValidity": 600,
+  "spConnectors": ["/Common/{{DNS2_NAME}}"],
+  "samlAttributes": [
+    {
+      "name": "name",
+      "type": "username",
+      "value": "sAMAccountName"
+    }
+  ]
+}
+```
+
+**Ansible:**
+```yaml
+- name: Create SAML IDP Service
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml/"
+    method: POST
+    body:
+      name: "{{ saml_idp_service.name }}"
+      entityId: "{{ saml_idp_service.entity_id }}"
+      idpHost: "{{ saml_idp_service.idp_host }}"
+      idpSignKey: "{{ saml_idp_service.signature_key }}"
+      assertionValidity: "{{ saml_idp_service.assertion_validity }}"
+      spConnectors:
+        - "{{ saml_idp_service.sp_connector }}"
+      samlAttributes: "{{ saml_idp_service.attributes }}"
+    status_code: [200, 201, 409]
+```
+
+**File:** `tasks/saml_idp_service.yml` (lines 7-39)
+
+---
+
+### 3. Connectivity Profile
+
+#### 3.1 Create PPP Tunnel
 
 **Postman:**
 ```http
@@ -202,7 +381,7 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/net/tunnels/tunnel
 
 **File:** `tasks/connectivity_profile.yml` (lines 7-24)
 
-#### 2.2 Create Customization Group
+#### 3.2 Create Customization Group
 
 **Postman:**
 ```http
@@ -229,7 +408,7 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/customization-group/
 
 **File:** `tasks/connectivity_profile.yml` (lines 30-45)
 
-#### 2.3 Create Connectivity Profile
+#### 3.3 Create Connectivity Profile
 
 **Postman:**
 ```http
@@ -262,9 +441,9 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/connectivity/
 
 ---
 
-### 3. Network Access Resource
+### 4. Network Access Resource
 
-#### 3.1 Create IP Lease Pool
+#### 4.1 Create IP Lease Pool
 
 **Postman:**
 ```http
@@ -292,7 +471,7 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/resource/leasepool/
 
 **File:** `tasks/network_access.yml` (lines 7-23)
 
-#### 3.2 Create Network Access Resource
+#### 4.2 Create Network Access Resource
 
 **Postman:**
 ```http
@@ -323,9 +502,9 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/resource/network-access/
 
 ---
 
-### 4. Access Policy (Transaction-based)
+### 5. Access Policy (Transaction-based)
 
-#### 4.1 Create Transaction
+#### 5.1 Create Transaction
 
 **Postman:**
 ```http
@@ -356,7 +535,7 @@ pm.collectionVariables.set("TRANSID", transId);
 
 **File:** `tasks/access_policy.yml` (lines 7-18)
 
-#### 4.2 Create Deny Ending (within transaction)
+#### 5.2 Create Deny Ending (within transaction)
 
 **Postman:**
 ```http
@@ -384,7 +563,7 @@ X-F5-REST-Coordination-Id: {{TRANSID}}
 
 **File:** `tasks/access_policy.yml` (lines 63-77)
 
-#### 4.3 Create AD Authentication Agent
+#### 5.3 Create AD Authentication Agent
 
 **Postman:**
 ```http
@@ -412,7 +591,7 @@ X-F5-REST-Coordination-Id: {{TRANSID}}
 
 **File:** `tasks/access_policy.yml` (lines 163-179)
 
-#### 4.4 Create Access Policy
+#### 5.4 Create Access Policy
 
 **Postman:**
 ```http
@@ -446,7 +625,7 @@ X-F5-REST-Coordination-Id: {{TRANSID}}
 
 **File:** `tasks/access_policy.yml` (lines 274-295)
 
-#### 4.5 Commit Transaction
+#### 5.5 Commit Transaction
 
 **Postman:**
 ```http
@@ -469,7 +648,7 @@ PUT https://{{BIGIP_MGMT}}/mgmt/tm/transaction/{{TRANSID}}/
 
 **File:** `tasks/access_policy.yml` (lines 323-334)
 
-#### 4.6 Apply Policy
+#### 5.6 Apply Policy
 
 **Postman:**
 ```http
@@ -493,9 +672,9 @@ PATCH https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/access/~Common~{{VS1_NAME}}-psp
 
 ---
 
-### 5. AS3 Application Deployment
+### 6. AS3 Application Deployment
 
-#### 5.1 Deploy Application
+#### 6.1 Deploy Application
 
 **Postman:**
 ```http
@@ -548,9 +727,9 @@ POST https://{{BIGIP_MGMT}}/mgmt/shared/appsvcs/declare
 
 ---
 
-### 6. GSLB Configuration
+### 7. GSLB Configuration
 
-#### 6.1 Create Datacenter
+#### 7.1 Create Datacenter
 
 **Postman:**
 ```http
@@ -572,7 +751,7 @@ POST https://10.1.1.11/mgmt/tm/gtm/datacenter
 
 **File:** `tasks/gslb_configuration.yml` (lines 18-30)
 
-#### 6.2 Create WideIP
+#### 7.2 Create WideIP
 
 **Postman:**
 ```http
@@ -707,16 +886,33 @@ To add additional solutions:
 
 | Component | File Path |
 |-----------|-----------|
-| Main playbook | `deploy_apm_vpn.yml` |
-| Variables | `vars/main.yml` |
+| Solution 1 playbook | `deploy_apm_vpn.yml` |
+| Solution 2 playbook | `deploy_apm_portal.yml` |
+| Solution 3 playbook | `deploy_apm_saml.yml` |
+| Solution 4 playbook | `deploy_apm_saml_idp.yml` |
+| Solution 1 variables | `vars/main.yml` |
+| Solution 2 variables | `vars/solution2.yml` |
+| Solution 3 variables | `vars/solution3.yml` |
+| Solution 4 variables | `vars/solution4.yml` |
 | AAA AD tasks | `tasks/aaa_ad_servers.yml` |
+| SAML IDP Connector (Sol 3) | `tasks/saml_idp_connector.yml` |
+| SAML Service Provider (Sol 3) | `tasks/saml_sp.yml` |
+| SAML SP Connector (Sol 4) | `tasks/saml_sp_connector.yml` |
+| SAML IDP Service (Sol 4) | `tasks/saml_idp_service.yml` |
 | Connectivity tasks | `tasks/connectivity_profile.yml` |
 | Network access tasks | `tasks/network_access.yml` |
+| Portal resources tasks | `tasks/portal_resources.yml` |
 | Webtop tasks | `tasks/webtop.yml` |
-| Access policy tasks | `tasks/access_policy.yml` |
+| Access policy (Sol 1) | `tasks/access_policy.yml` |
+| Access policy (Sol 2) | `tasks/access_policy_solution2.yml` |
+| Access policy (Sol 3) | `tasks/access_policy_solution3.yml` |
+| Access policy (Sol 4) | `tasks/access_policy_solution4.yml` |
 | AS3 deployment tasks | `tasks/as3_deployment.yml` |
 | GSLB tasks | `tasks/gslb_configuration.yml` |
-| Source collection | `docs/solution1-create.postman_collection.json` |
+| Solution 1 source | `docs/solution1-create.postman_collection.json` |
+| Solution 2 source | `docs/solution2-create.postman_collection.json` |
+| Solution 3 source | `docs/solution3-create.postman_collection.json` |
+| Solution 4 source | `docs/solution4-create.postman_collection.json` |
 
 ---
 
