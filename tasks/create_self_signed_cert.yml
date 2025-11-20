@@ -65,6 +65,7 @@
     body:
       name: "{{ vs1_name }}-saml"
       partition: "Common"
+      commonName: "{{ dns1_name }}"
       sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.crt"
     status_code: [200, 201, 409]
     timeout: 30
