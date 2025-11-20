@@ -16,7 +16,7 @@ vs1_name: "solution1"
 dns1_name: "solution1.acme.com"
 partition_name: "solution1"
 path_name: "solution1"
-custom_type: "modern"
+custom_type: "standard"
 
 # Active Directory Configuration
 ad_server_ip: "10.1.20.7"
@@ -28,8 +28,8 @@ ad_admin_password: "admin"
 vpn_lease_pool_start: "10.1.2.1"
 vpn_lease_pool_end: "10.1.2.254"
 vpn_split_tunnel_networks:
-  - "10.1.10.0/255.255.255.0"
-  - "10.1.20.0/255.255.255.0"
+  - "10.1.10.0/24"
+  - "10.1.20.0/24"
 
 # Address Management API (optional - for dynamic IP allocation)
 address_mgmt_enabled: false

@@ -38,16 +38,16 @@
     body:
       name: "{{ vs1_name }}-psp_{{ item.type }}"
       partition: "Common"
-      source: "/Common/{{ item.source }}"
+      source: "/Common/{{ custom_type }}"
       type: "{{ item.api_type }}"
     status_code: [200, 201, 409]
   delegate_to: localhost
   loop:
-    - { type: "logout", source: "logout", api_type: "logout" }
-    - { type: "eps", source: "eps", api_type: "eps" }
-    - { type: "errormap", source: "errormap", api_type: "errormap" }
-    - { type: "framework_installation", source: "framework-installation", api_type: "framework-installation" }
-    - { type: "general_ui", source: "general-ui", api_type: "general-ui" }
+    - { type: "logout", api_type: "logout" }
+    - { type: "eps", api_type: "eps" }
+    - { type: "errormap", api_type: "errormap" }
+    - { type: "framework_installation", api_type: "framework-installation" }
+    - { type: "general_ui", api_type: "general-ui" }
   loop_control:
     label: "{{ item.type }}"
 
@@ -65,8 +65,8 @@
     body:
       name: "{{ vs1_name }}-psp_end_deny_ag"
       partition: "Common"
-      source: "/Common/ending-deny_{{ custom_type }}"
-      type: "agent-ending-deny"
+      source: "/Common/{{ custom_type }}"
+      type: "logout"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -101,9 +101,12 @@
       name: "{{ vs1_name }}-psp_end_deny"
       partition: "Common"
       caption: "Deny"
+      color: 2
+      itemType: "ending"
       agents:
-        - "/Common/{{ vs1_name }}-psp_end_deny_ag"
-      type: "ending-deny"
+        - name: "{{ vs1_name }}-psp_end_deny_ag"
+          partition: "Common"
+          type: "ending-deny"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -138,9 +141,12 @@
       name: "{{ vs1_name }}-psp_end_allow"
       partition: "Common"
       caption: "Allow"
+      color: 1
+      itemType: "ending"
       agents:
-        - "/Common/{{ vs1_name }}-psp_end_allow_ag"
-      type: "ending-allow"
+        - name: "{{ vs1_name }}-psp_end_allow_ag"
+          partition: "Common"
+          type: "ending-allow"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -158,16 +164,13 @@
     body:
       name: "{{ vs1_name }}-psp_act_full_resource_assign_ag"
       partition: "Common"
-      type: "resource-assign"
-      advancedResourceAssign:
-        - expression: "expr {1}"
-          resourceType: "webtop"
-          resources:
-            - "/Common/{{ vs1_name }}-webtop"
-        - expression: "expr {1}"
-          resourceType: "network-access"
-          resources:
+      type: "general"
+      rules:
+        - networkAccessResources:
             - "/Common/{{ vs1_name }}-vpn"
+          webtopSections:
+            - "/Common/{{ vs1_name }}-network_access"
+          webtop: "/Common/{{ vs1_name }}-webtop"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -185,13 +188,16 @@
       name: "{{ vs1_name }}-psp_act_full_resource_assign"
       partition: "Common"
       caption: "Advanced Resource Assign"
+      color: 1
+      itemType: "action"
+      loop: "false"
       agents:
-        - "/Common/{{ vs1_name }}-psp_act_full_resource_assign_ag"
+        - name: "{{ vs1_name }}-psp_act_full_resource_assign_ag"
+          partition: "Common"
+          type: "resource-assign"
       rules:
         - caption: "fallback"
-          expression: "expr {1}"
           nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
-      type: "action"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -209,11 +215,9 @@
     body:
       name: "{{ vs1_name }}-psp_act_active_directory_auth_ag"
       partition: "Common"
-      authServer: "/Common/{{ vs1_name }}-ad-servers"
-      allowUserChangePwd: "false"
-      allowUserPwdExpiredChange: "false"
-      maxLogonAttempts: "{{ apm_max_login_failures }}"
-      type: "aaa-active-directory"
+      server: "/Common/{{ vs1_name }}-ad-servers"
+      authMaxLogonAttempt: "{{ apm_max_login_failures }}"
+      type: "auth"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -231,16 +235,19 @@
       name: "{{ vs1_name }}-psp_act_active_directory_auth"
       partition: "Common"
       caption: "AD Auth"
+      color: 1
+      itemType: "action"
+      loop: "false"
       agents:
-        - "/Common/{{ vs1_name }}-psp_act_active_directory_auth_ag"
+        - name: "{{ vs1_name }}-psp_act_active_directory_auth_ag"
+          partition: "Common"
+          type: "aaa-active-directory"
       rules:
         - caption: "Successful"
           expression: "expr {[mcget {session.ad.last.authresult}] == 1}"
           nextItem: "/Common/{{ vs1_name }}-psp_act_full_resource_assign"
         - caption: "fallback"
-          expression: "expr {1}"
           nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
-      type: "action"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -258,8 +265,8 @@
     body:
       name: "{{ vs1_name }}-psp_act_logon_page_ag"
       partition: "Common"
-      source: "/Common/logon-page_{{ custom_type }}"
-      type: "agent-logon-page"
+      source: "/Common/{{ custom_type }}"
+      type: "logon"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -277,12 +284,11 @@
       name: "{{ vs1_name }}-psp_act_logon_page_ag"
       partition: "Common"
       customizationGroup: "/Common/{{ vs1_name }}-psp_act_logon_page_ag"
-      type: "agent-logon-page"
-      fields:
-        - name: "username"
-          type: "text"
-        - name: "password"
-          type: "password"
+      type: "form-based"
+      sessVarName1: "username"
+      sessVarName2: "password"
+      postVarName1: "username"
+      postVarName2: "password"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -300,13 +306,16 @@
       name: "{{ vs1_name }}-psp_act_logon_page"
       partition: "Common"
       caption: "Logon Page"
+      color: 1
+      itemType: "action"
+      loop: "false"
       agents:
-        - "/Common/{{ vs1_name }}-psp_act_logon_page_ag"
+        - name: "{{ vs1_name }}-psp_act_logon_page_ag"
+          partition: "Common"
+          type: "logon-page"
       rules:
         - caption: "fallback"
-          expression: "expr {1}"
           nextItem: "/Common/{{ vs1_name }}-psp_act_active_directory_auth"
-      type: "action"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -325,11 +334,12 @@
       name: "{{ vs1_name }}-psp_ent"
       partition: "Common"
       caption: "Start"
+      color: 1
+      itemType: "entry"
+      loop: "false"
       rules:
         - caption: "fallback"
-          expression: "expr {1}"
           nextItem: "/Common/{{ vs1_name }}-psp_act_logon_page"
-      type: "start"
     status_code: [200, 201, 409]
   delegate_to: localhost
 
@@ -348,15 +358,21 @@
       name: "{{ vs1_name }}-psp"
       partition: "Common"
       defaultEnding: "{{ vs1_name }}-psp_end_deny"
+      startItem: "{{ vs1_name }}-psp_ent"
+      type: "access-policy"
       items:
-        - "/Common/{{ vs1_name }}-psp_ent"
-        - "/Common/{{ vs1_name }}-psp_act_logon_page"
-        - "/Common/{{ vs1_name }}-psp_act_active_directory_auth"
-        - "/Common/{{ vs1_name }}-psp_act_full_resource_assign"
-        - "/Common/{{ vs1_name }}-psp_end_allow"
-        - "/Common/{{ vs1_name }}-psp_end_deny"
-      startItem: "/Common/{{ vs1_name }}-psp_ent"
-      type: "access"
+        - name: "{{ vs1_name }}-psp_ent"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_logon_page"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_active_directory_auth"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_full_resource_assign"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_allow"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_deny"
+          partition: "Common"
     status_code: [200, 201, 409]
   delegate_to: localhost
 

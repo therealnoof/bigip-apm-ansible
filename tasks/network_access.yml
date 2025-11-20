@@ -39,7 +39,7 @@
       name: "{{ vs1_name }}-vpn_resource_network_access_customization"
       partition: "Common"
       type: "resource-network-access"
-      source: "/Common/resource-network-access_{{ custom_type }}"
+      source: "/Common/standard"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: na_custom_result
@@ -61,24 +61,21 @@
     body:
       name: "{{ vs1_name }}-vpn"
       partition: "Common"
-      addressSpaceDhcpRequestsExcludeEnabled: "true"
-      addressSpaceExcludeClientDnsServers: "disabled"
-      addressSpaceExcludeClientSubnets: "disabled"
-      addressSpaceExcludeDnsNameServersEnabled: "true"
-      addressSpaceIncludeClientSubnets: "disabled"
-      addressSpaceIncludeDnsNameServersEnabled: "false"
-      addressSpaceIncludeSubnets: "{{ vpn_split_tunnel_networks }}"
-      allowLocalSubnet: "enabled"
-      allowLocalDns: "enabled"
-      clientLeaseDuration: 28800
+      addressSpaceDhcpRequestsExcluded: "true"
+      addressSpaceLocDnsServersExcluded: "false"
+      addressSpaceLocalSubnetsExcluded: "false"
+      addressSpaceProtect: "false"
       customizationGroup: "/Common/{{ vs1_name }}-vpn_resource_network_access_customization"
-      dtlsEnabled: "true"
+      dtls: "false"
       dtlsPort: 4433
-      ipv4LeasePool: "/Common/{{ vs1_name }}-vpn_pool"
-      ipv6PrimaryDns: "none"
-      ipv6SecondaryDns: "none"
+      leasepoolName: "/Common/{{ vs1_name }}-vpn_pool"
+      locationSpecific: "true"
+      snat: "automap"
       splitTunneling: "true"
-      trafficAcceleration: "enabled"
+      type: "network-access"
+      addressSpaceIncludeSubnet:
+        - subnet: "{{ vpn_split_tunnel_networks[0] }}"
+        - subnet: "{{ vpn_split_tunnel_networks[1] }}"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: na_resource_result
@@ -86,5 +83,5 @@
 
 - name: Display network access resource result
   debug:
-    msg: "Network access resource {{ vs1_name }}-vpn - {{ 'created' if na_resource_result.status == 200 or na_resource_result.status == 201 else 'already exists' }}"
+    msg: "Network access resource {{ vs1_name }}-vpn - {{ 'created' if na_resource_result.status == 200 or na_resource_result.status == 201 else 'already exists' }} with split tunneling for {{ vpn_split_tunnel_networks | join(', ') }}"
   when: create_network_access | bool

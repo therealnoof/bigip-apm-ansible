@@ -15,7 +15,7 @@
       name: "{{ vs1_name }}-network_access_resource_webtop_section_customization"
       partition: "Common"
       type: "resource-webtop-section"
-      source: "/Common/resource-webtop-section_{{ custom_type }}"
+      source: "/Common/standard"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: webtop_section_custom_result
@@ -26,27 +26,10 @@
     msg: "Webtop section customization group - {{ 'created' if webtop_section_custom_result.status == 200 or webtop_section_custom_result.status == 201 else 'already exists' }}"
   when: create_webtop | bool
 
-- name: Retrieve existing webtop sections
-  uri:
-    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop-section/"
-    method: GET
-    user: "{{ bigip_username }}"
-    password: "{{ bigip_password }}"
-    validate_certs: "{{ bigip_validate_certs }}"
-    status_code: [200]
-  delegate_to: localhost
-  register: existing_webtop_sections
-  when: create_webtop | bool
-
-- name: Calculate next display order
-  set_fact:
-    next_display_order: "{{ (existing_webtop_sections.json.items | map(attribute='displayOrder') | map('int') | max | default(0)) + 1 }}"
-  when: create_webtop | bool and existing_webtop_sections.json.items is defined
-
-- name: Set default display order if no sections exist
+- name: Set display order
   set_fact:
     next_display_order: 1
-  when: create_webtop | bool and (existing_webtop_sections.json.items is not defined or existing_webtop_sections.json.items | length == 0)
+  when: create_webtop | bool
 
 - name: Create webtop section
   uri:
@@ -61,10 +44,13 @@
       partition: "Common"
       customizationGroup: "/Common/{{ vs1_name }}-network_access_resource_webtop_section_customization"
       displayOrder: "{{ next_display_order | int }}"
-      items:
-        - "/Common/{{ vs1_name }}-vpn"
-      sectionOrder: 1
-      type: "resource-assign"
+      initialState: "expanded"
+      sortResources: "by-priority"
+      resources:
+        - name: "Item1"
+          priority: 1
+          resourceName: "/Common/{{ vs1_name }}-vpn"
+          resourceType: "network-access"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: webtop_section_result
@@ -73,29 +59,6 @@
 - name: Display webtop section result
   debug:
     msg: "Webtop section {{ vs1_name }}-network_access - {{ 'created' if webtop_section_result.status == 200 or webtop_section_result.status == 201 else 'already exists' }}"
-  when: create_webtop | bool
-
-- name: Create webtop customization group
-  uri:
-    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
-    method: POST
-    user: "{{ bigip_username }}"
-    password: "{{ bigip_password }}"
-    validate_certs: "{{ bigip_validate_certs }}"
-    body_format: json
-    body:
-      name: "{{ vs1_name }}-webtop_customization"
-      partition: "Common"
-      source: "/Common/webtop_{{ custom_type }}"
-      type: "resource-webtop"
-    status_code: [200, 201, 409]
-  delegate_to: localhost
-  register: webtop_custom_result
-  when: create_webtop | bool
-
-- name: Display webtop customization result
-  debug:
-    msg: "Webtop customization group - {{ 'created' if webtop_custom_result.status == 200 or webtop_custom_result.status == 201 else 'already exists' }}"
   when: create_webtop | bool
 
 - name: Create webtop
@@ -108,8 +71,12 @@
     body_format: json
     body:
       name: "{{ vs1_name }}-webtop"
-      customizationGroup: "/Common/{{ vs1_name }}-webtop_customization"
-      type: "full"
+      partition: "Common"
+      webtopType: "full"
+      minimizeToTray: "true"
+      showSearch: "false"
+      warnWhenClosed: "true"
+      showUrlEntryField: "false"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: webtop_result

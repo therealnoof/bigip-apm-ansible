@@ -66,7 +66,7 @@
       compression: "{{ 'enabled' if enable_compression else 'disabled' }}"
       customizationGroup: "/Common/{{ vs1_name }}-cp_secure_access_client_customization"
       tunnelMode: "bidirectional"
-      tunnelReference: "/Common/{{ vs1_name }}-tunnel"
+      tunnel: "/Common/{{ vs1_name }}-tunnel"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: cp_profile_result

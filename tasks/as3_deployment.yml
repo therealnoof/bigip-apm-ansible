@@ -49,51 +49,61 @@
     password: "{{ bigip_password }}"
     validate_certs: "{{ bigip_validate_certs }}"
     body_format: json
-    body:
-      class: "ADC"
-      action: "deploy"
-      persist: true
-      declaration:
-        class: "ADC"
-        schemaVersion: "3.0.0"
-        id: "{{ partition_name }}"
-        label: "{{ vs1_name }} VPN Application"
-        remark: "APM VPN solution deployed via Ansible"
-        "{{ partition_name }}":
-          class: "Tenant"
-          "{{ path_name }}":
-            class: "Application"
-            template: "https"
-            serviceMain:
-              class: "Service_HTTPS"
-              virtualAddresses:
-                - "{{ app_vs_address | default('0.0.0.0') }}"
-              virtualPort: "{{ app_vs_port }}"
-              profileHTTP:
-                use: "http_profile"
-              profileTCP:
-                use: "tcp_profile"
-              serverTLS:
-                bigip: "/Common/serverssl"
-              clientTLS:
-                bigip: "/Common/clientssl"
-              profileAccess:
-                bigip: "/Common/{{ vs1_name }}-psp"
-              profileConnectivity:
-                bigip: "/Common/{{ vs1_name }}-cp"
-              pool: "{{ vs1_name }}_pool"
-              snat: "auto"
-            "{{ vs1_name }}_pool":
-              class: "Pool"
-              monitors:
-                - "http"
-              members: "{{ app_pool_members | default([]) }}"
-            http_profile:
-              class: "HTTP_Profile"
-              xForwardedFor: true
-            tcp_profile:
-              class: "TCP_Profile"
-              idleTimeout: 1800
+    body: |
+      {
+        "class": "ADC",
+        "action": "deploy",
+        "persist": true,
+        "declaration": {
+          "class": "ADC",
+          "schemaVersion": "3.14.0",
+          "id": "APM",
+          "{{ partition_name }}": {
+            "class": "Tenant",
+            "{{ vs1_name }}": {
+              "class": "Application",
+              "template": "generic",
+              "{{ vs1_name }}": {
+                "class": "Service_HTTPS",
+                "virtualAddresses": ["{{ app_vs_address | default('0.0.0.0') }}"],
+                "virtualPort": 443,
+                "serverTLS": "{{ vs1_name }}-clientssl",
+                "pool": "ad-pool",
+                "snat": "auto",
+                "profileConnectivity": {
+                  "bigip": "/Common/{{ vs1_name }}-cp"
+                },
+                "profileAccess": {
+                  "bigip": "/Common/{{ vs1_name }}-psp"
+                }
+              },
+              "{{ vs1_name }}-clientssl": {
+                "class": "TLS_Server",
+                "certificates": [
+                  {
+                    "certificate": "tlsserver_local_cert"
+                  }
+                ]
+              },
+              "tlsserver_local_cert": {
+                "class": "Certificate",
+                "certificate": {"bigip": "/Common/default.crt"},
+                "privateKey": {"bigip": "/Common/default.key"}
+              },
+              "ad-pool": {
+                "class": "Pool",
+                "members": [
+                  {
+                    "serverAddresses": ["{{ ad_server_ip }}"],
+                    "servicePort": 3389
+                  }
+                ],
+                "monitors": ["icmp"]
+              }
+            }
+          }
+        }
+      }
     status_code: [200, 201]
   delegate_to: localhost
   register: as3_result

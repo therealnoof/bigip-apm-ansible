@@ -15,8 +15,8 @@
     body:
       name: "{{ vs1_name }}-{{ portal.name }}_resource_web_app_customization"
       partition: "Common"
-      type: "resource-web-app"
-      source: "/Common/resource-web-app_{{ custom_type }}"
+      type: "resource-portal-access"
+      source: "/Common/standard"
     status_code: [200, 201, 409]
   delegate_to: localhost
   register: portal_custom_result
