@@ -860,6 +860,298 @@ ansible-vault encrypt vars/main.yml
 | Validation | Manual inspection | Task-level checks |
 | Documentation | Separate | Inline task names |
 
+## Solution 4 Critical Implementation Details
+
+Solution 4 (SAML Identity Provider with AD Authentication) requires specific API parameter ordering and values that differ from other solutions. These requirements were discovered through iterative debugging and must be followed precisely.
+
+### Self-Signed Certificate Generation
+
+**Postman:** Not included (manual certificate creation assumed)
+
+**Ansible:** Automated using OpenSSL
+```yaml
+# tasks/create_self_signed_cert.yml
+- name: Generate self-signed certificate locally
+  command: >
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048
+    -keyout /tmp/{{ vs1_name }}-saml.key
+    -out /tmp/{{ vs1_name }}-saml.crt
+    -subj "/C=US/ST=State/L=City/O=Organization/CN={{ dns1_name }}"
+
+- name: Upload private key to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}-saml.key"
+    method: POST
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Range: "0-{{ key_content | length - 1 }}/{{ key_content | length }}"
+    body: "{{ key_content }}"
+    status_code: [200, 201]
+
+- name: Install private key on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key"
+    method: POST
+    body:
+      name: "{{ vs1_name }}-saml"
+      partition: "Common"
+      sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.key"
+    status_code: [200, 201, 400, 409]  # 400 = already exists (idempotent)
+
+- name: Install certificate on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+    method: POST
+    body:
+      name: "{{ vs1_name }}-saml"
+      partition: "Common"
+      commonName: "{{ dns1_name }}"  # REQUIRED for SAML
+      sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}-saml.crt"
+      key: "/Common/{{ vs1_name }}-saml"  # Associate with key
+    status_code: [200, 201, 400, 409]  # 400 = already exists (idempotent)
+```
+
+**Critical Notes:**
+- Private key MUST be installed before certificate
+- `commonName` attribute is REQUIRED for SAML certificates
+- `key` field associates certificate with private key
+- Status code 400 indicates "already exists" on some BIG-IP versions (not 409)
+
+**File:** `tasks/create_self_signed_cert.yml`
+
+---
+
+### Customization Groups - Ordering Requirements
+
+**CRITICAL:** Customization groups MUST be created in a specific order. Deny ending customization group must be created FIRST.
+
+**Postman Order (Solution 4):**
+```json
+// 1. Deny ending customization group
+{
+  "name": "{{VS1_NAME}}-psp_end_deny_ag",
+  "partition": "Common",
+  "source": "/Common/{{CUSTOM_TYPE}}",
+  "type": "logout"
+}
+
+// 2. Logout customization group
+{
+  "name": "{{VS1_NAME}}-psp_logout",
+  "partition": "Common",
+  "source": "/Common/{{CUSTOM_TYPE}}",
+  "type": "logout"
+}
+
+// 3-6. Other customization groups (eps, errormap, framework, general_ui)
+
+// 7. Logon page customization group (REQUIRED for Solution 4)
+{
+  "name": "{{VS1_NAME}}-psp_act_logon_page_ag",
+  "partition": "Common",
+  "type": "logon",
+  "source": "/Common/{{CUSTOM_TYPE}}"
+}
+```
+
+**Ansible:**
+```yaml
+# vars/solution4.yml
+# NOTE: Order matters! Deny ending MUST be first
+customization_groups:
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  # ... other groups ...
+
+  - name: "{{ vs1_name }}-psp_act_logon_page_ag"  # Required for logon page agent
+    type: "logon"
+    source: "/Common/{{ custom_type }}"
+```
+
+**Critical Notes:**
+- Deny ending customization group MUST be first in the list
+- Logon page customization group is REQUIRED (missing in initial implementation)
+- `source` must be a valid customization type: `/Common/standard` or `/Common/modern`
+- Use `standard` for maximum compatibility (not all BIG-IP versions have `modern`)
+
+**File:** `vars/solution4.yml` (lines 167-194)
+
+---
+
+### Policy Agents - Type Requirements
+
+**CRITICAL:** Policy agents MUST be created in specific order with correct type parameters.
+
+#### Agent Creation Order
+
+**Postman Order:**
+```
+1. Allow ending agent (NO customizationGroup)
+2. Deny ending agent (WITH customizationGroup)
+3. Active Directory agent (WITH type: "auth")
+4. Logon page agent (WITH customizationGroup)
+```
+
+**Incorrect Order (causes transaction failure):**
+```yaml
+# WRONG - This will fail with "agent type value doesn't match"
+- name: Create deny ending agent  # Should be second, not first
+- name: Create allow ending agent
+```
+
+**Correct Order:**
+```yaml
+# tasks/access_policy_solution4.yml
+
+# 1. Allow ending agent (no customizationGroup)
+- name: Create allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body:
+      name: "{{ policy_agents.allow_ending.name }}"
+      partition: "Common"
+      # NO customizationGroup for allow ending
+    status_code: [200, 201, 409]
+
+# 2. Deny ending agent (WITH customizationGroup)
+- name: Create deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body:
+      name: "{{ policy_agents.deny_ending.name }}"
+      partition: "Common"
+      customizationGroup: "{{ policy_agents.deny_ending.customization_group }}"
+    status_code: [200, 201, 409]
+```
+
+#### AAA Active Directory Agent - REQUIRED Type Parameter
+
+**Postman:**
+```json
+{
+  "name": "{{VS1_NAME}}-psp_act_active_directory_auth_ag",
+  "partition": "Common",
+  "authMaxLogonAttempt": 3,
+  "server": "/Common/{{VS1_NAME}}-ad-servers",
+  "type": "auth",  // CRITICAL: Required for profile compatibility
+  "upn": "false",
+  "fetchNestedGroups": "false",
+  "showExtendedError": "false"
+}
+```
+
+**Ansible:**
+```yaml
+- name: Create AD authentication agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory/"
+    method: POST
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body:
+      name: "{{ policy_agents.ad_auth.name }}"
+      partition: "Common"
+      server: "{{ policy_agents.ad_auth.server }}"
+      authMaxLogonAttempts: "{{ policy_agents.ad_auth.auth_max_logon_attempts }}"
+      type: "auth"  # REQUIRED: Allows association with profile type "all"
+      upn: "{{ policy_agents.ad_auth.upn }}"
+      fetchNestedGroups: "{{ policy_agents.ad_auth.fetch_nested_groups }}"
+      showExtendedError: "{{ policy_agents.ad_auth.show_extended_error }}"
+```
+
+**Error Without type: "auth":**
+```
+transaction failed: Profile access (/Common/idp-psp) of type all cannot be
+associated with agent (/Common/idp-psp_act_active_directory_auth_ag) of type
+aaa-active-directory
+```
+
+**File:** `tasks/access_policy_solution4.yml` (lines 107-129)
+
+---
+
+### Policy Items - Agent Reference Format
+
+**CRITICAL:** Policy items MUST reference agents as objects with name/partition/type, not as simple strings.
+
+**Incorrect Format (causes transaction failure):**
+```yaml
+# WRONG - Simple string reference
+body:
+  name: "{{ policy_items.deny_ending.name }}"
+  agents:
+    - "/Common/{{ policy_agents.deny_ending.name }}"  # WRONG
+  itemType: "ending"
+```
+
+**Correct Format:**
+```yaml
+# CORRECT - Object with name, partition, and type
+body:
+  name: "{{ policy_items.deny_ending.name }}"
+  agents:
+    - name: "{{ policy_agents.deny_ending.name }}"
+      partition: "Common"
+      type: "{{ policy_items.deny_ending.agent_type }}"  # e.g., "ending-deny"
+  caption: "{{ policy_items.deny_ending.caption }}"
+  color: "{{ policy_items.deny_ending.color }}"
+  itemType: "{{ policy_items.deny_ending.item_type }}"
+```
+
+**Postman Format:**
+```json
+{
+  "name": "{{VS1_NAME}}-psp_end_deny",
+  "partition": "Common",
+  "caption": "Deny",
+  "color": 2,
+  "itemType": "ending",
+  "agents": [
+    {
+      "name": "{{VS1_NAME}}-psp_end_deny_ag",
+      "partition": "Common",
+      "type": "ending-deny"
+    }
+  ]
+}
+```
+
+**Agent Type Mappings:**
+- Deny ending: `type: "ending-deny"`
+- Allow ending: `type: "ending-allow"`
+- Logon page: `type: "logon-page"`
+- AD authentication: `type: "aaa-active-directory"`
+
+**File:** `tasks/access_policy_solution4.yml` (lines 134-241)
+
+---
+
+### Transaction Validation Errors and Solutions
+
+Common errors encountered during Solution 4 implementation:
+
+| Error Message | Root Cause | Solution |
+|---------------|------------|----------|
+| `The agent can not have empty customization group` | Logon page agent missing customizationGroup | Add logon page customization group and reference it |
+| `Agent of type (1) has agent type value (0) which doesn't match` | Agents created in wrong order | Create allow ending before deny ending |
+| `Profile access of type all cannot be associated with agent of type aaa-active-directory` | AD agent missing type: "auth" | Add `type: "auth"` to AD agent body |
+| `Configuration group has invalid source '/Common/modern'` | Customization type not available | Change custom_type to "standard" |
+| `The requested key(idp-saml) already exists` | Certificate re-upload not idempotent | Add status code 400 to accepted codes |
+
+---
+
 ## Migration Path
 
 ### From Postman to Ansible

@@ -13,16 +13,17 @@ SSL Verification: Disabled for lab (enable in production)
 ## Table of Contents
 
 1. [System & Connectivity](#system--connectivity)
-2. [Transaction Management](#transaction-management)
-3. [AAA Authentication](#aaa-authentication)
-4. [SAML SSO Configuration](#saml-sso-configuration)
-5. [Network & Tunnels](#network--tunnels)
-6. [APM Profiles & Policies](#apm-profiles--policies)
-7. [Policy Items & Agents](#policy-items--agents)
-8. [Customization Groups](#customization-groups)
-9. [Resources](#resources)
-10. [Application Services (AS3)](#application-services-as3)
-11. [GSLB/DNS](#gslbdns)
+2. [Certificate Management](#certificate-management)
+3. [Transaction Management](#transaction-management)
+4. [AAA Authentication](#aaa-authentication)
+5. [SAML SSO Configuration](#saml-sso-configuration)
+6. [Network & Tunnels](#network--tunnels)
+7. [APM Profiles & Policies](#apm-profiles--policies)
+8. [Policy Items & Agents](#policy-items--agents)
+9. [Customization Groups](#customization-groups)
+10. [Resources](#resources)
+11. [Application Services (AS3)](#application-services-as3)
+12. [GSLB/DNS](#gslbdns)
 
 ---
 
@@ -67,6 +68,222 @@ GET /mgmt/shared/appsvcs/info
   "schemaMinimum": "3.0.0"
 }
 ```
+
+---
+
+## Certificate Management
+
+Certificate management endpoints for uploading, installing, and managing SSL/TLS certificates and private keys. Used in Solution 4 for SAML assertion signing.
+
+### Upload Private Key File
+
+```http
+POST /mgmt/shared/file-transfer/uploads/{key_filename}.key
+Content-Type: application/octet-stream
+Content-Range: 0-{size-1}/{size}
+
+{private_key_content}
+```
+
+**Example:**
+```http
+POST /mgmt/shared/file-transfer/uploads/idp-saml.key
+Content-Type: application/octet-stream
+Content-Range: 0-1678/1679
+
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
+-----END PRIVATE KEY-----
+```
+
+**Response:** `200 OK`
+
+**Used in:** Solution 4 (SAML IDP)
+**File:** `tasks/create_self_signed_cert.yml`
+
+---
+
+### Upload Certificate File
+
+```http
+POST /mgmt/shared/file-transfer/uploads/{cert_filename}.crt
+Content-Type: application/octet-stream
+Content-Range: 0-{size-1}/{size}
+
+{certificate_content}
+```
+
+**Example:**
+```http
+POST /mgmt/shared/file-transfer/uploads/idp-saml.crt
+Content-Type: application/octet-stream
+Content-Range: 0-1245/1246
+
+-----BEGIN CERTIFICATE-----
+MIIDXTCCAkWgAwIBAgIJAKL0UG+mRTyvMA0GCSqGSIb3DQEBCwUA...
+-----END CERTIFICATE-----
+```
+
+**Response:** `200 OK`
+
+**Used in:** Solutions 3 & 4
+**File:** `tasks/create_self_signed_cert.yml`, `tasks/saml_idp_connector.yml`
+
+---
+
+### Install Private Key
+
+```http
+POST /mgmt/tm/sys/crypto/key
+Content-Type: application/json
+
+{
+  "name": "idp-saml",
+  "partition": "Common",
+  "sourcePath": "file:/var/config/rest/downloads/idp-saml.key"
+}
+```
+
+**Response:**
+```json
+{
+  "kind": "tm:sys:crypto:key:keystate",
+  "name": "idp-saml",
+  "partition": "Common",
+  "fullPath": "/Common/idp-saml",
+  "generation": 1,
+  "selfLink": "https://localhost/mgmt/tm/sys/crypto/key/~Common~idp-saml",
+  "keySize": 2048,
+  "keyType": "rsa-private",
+  "securityType": "normal"
+}
+```
+
+**Status Codes:**
+- `200`: Successfully installed
+- `201`: Created new key
+- `400`: Key already exists (idempotent - acceptable for rerun)
+- `409`: Conflict (some BIG-IP versions)
+
+**Critical Notes:**
+- Private key MUST be installed BEFORE the certificate
+- For SAML certificates, the key must be associated with the cert in the next step
+- Status code 400 indicates "already exists" on some BIG-IP versions (not 409)
+
+**Used in:** Solution 4
+**File:** `tasks/create_self_signed_cert.yml`
+
+---
+
+### Install Certificate
+
+```http
+POST /mgmt/tm/sys/crypto/cert
+Content-Type: application/json
+
+{
+  "name": "idp-saml",
+  "partition": "Common",
+  "commonName": "idp.acme.com",
+  "sourcePath": "file:/var/config/rest/downloads/idp-saml.crt",
+  "key": "/Common/idp-saml"
+}
+```
+
+**Response:**
+```json
+{
+  "kind": "tm:sys:crypto:cert:certstate",
+  "name": "idp-saml",
+  "partition": "Common",
+  "fullPath": "/Common/idp-saml",
+  "generation": 1,
+  "selfLink": "https://localhost/mgmt/tm/sys/crypto/cert/~Common~idp-saml",
+  "certificateKeySize": 2048,
+  "commonName": "idp.acme.com",
+  "issuer": "CN=idp.acme.com,O=Organization,L=City,ST=State,C=US",
+  "subject": "CN=idp.acme.com,O=Organization,L=City,ST=State,C=US",
+  "expirationDate": 1670000000,
+  "expirationString": "Dec 2 2024",
+  "keyType": "rsa-public"
+}
+```
+
+**Request Parameters:**
+- `name`: Certificate name (must match key name for association)
+- `partition`: Partition (typically "Common")
+- `commonName`: **REQUIRED for SAML certificates** - FQDN of the service
+- `sourcePath`: Path to uploaded certificate file
+- `key`: **REQUIRED for SAML** - Reference to private key (`/Common/{key-name}`)
+
+**Status Codes:**
+- `200`: Successfully installed
+- `201`: Created new certificate
+- `400`: Certificate already exists (idempotent - acceptable for rerun)
+- `409`: Conflict (some BIG-IP versions)
+
+**Critical Notes:**
+- `commonName` attribute is **REQUIRED** for SAML certificates
+- `key` field associates certificate with private key for signing operations
+- Must be installed AFTER the private key
+- Status code 400 indicates "already exists" on some BIG-IP versions
+
+**Used in:** Solutions 3 & 4
+**File:** `tasks/create_self_signed_cert.yml`, `tasks/saml_idp_connector.yml`
+
+---
+
+### Query Certificate Details
+
+```http
+GET /mgmt/tm/sys/crypto/cert/~Common~{cert_name}
+```
+
+**Response:**
+```json
+{
+  "kind": "tm:sys:crypto:cert:certstate",
+  "name": "idp-saml",
+  "partition": "Common",
+  "fullPath": "/Common/idp-saml",
+  "certificateKeySize": 2048,
+  "commonName": "idp.acme.com",
+  "issuer": "CN=idp.acme.com,O=Organization,L=City,ST=State,C=US",
+  "subject": "CN=idp.acme.com,O=Organization,L=City,ST=State,C=US",
+  "expirationDate": 1670000000,
+  "expirationString": "Dec 2 2024",
+  "keyType": "rsa-public",
+  "key": "/Common/idp-saml"
+}
+```
+
+**Used in:** Solutions 3 & 4 (validation)
+
+---
+
+### Delete Certificate
+
+```http
+DELETE /mgmt/tm/sys/crypto/cert/~Common~{cert_name}
+```
+
+**Response:** `200 OK`
+
+**Used in:** Cleanup playbooks
+
+---
+
+### Delete Private Key
+
+```http
+DELETE /mgmt/tm/sys/crypto/key/~Common~{key_name}
+```
+
+**Response:** `200 OK`
+
+**Critical Note:** Delete certificate BEFORE deleting the associated key
+
+**Used in:** Cleanup playbooks
 
 ---
 
