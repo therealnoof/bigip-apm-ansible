@@ -117,8 +117,8 @@
       name: "{{ policy_agents.ad_auth.name }}"
       partition: "Common"
       server: "{{ policy_agents.ad_auth.server }}"
-      authMaxLogonAttempts: {{ policy_agents.ad_auth.auth_max_logon_attempts }}
-      maxPasswordResetAttempts: {{ policy_agents.ad_auth.max_password_reset_attempts }}
+      authMaxLogonAttempts: "{{ policy_agents.ad_auth.auth_max_logon_attempts }}"
+      maxPasswordResetAttempts: "{{ policy_agents.ad_auth.max_password_reset_attempts }}"
       fetchNestedGroups: "{{ policy_agents.ad_auth.fetch_nested_groups }}"
       showExtendedError: "{{ policy_agents.ad_auth.show_extended_error }}"
       upn: "{{ policy_agents.ad_auth.upn }}"
@@ -147,7 +147,7 @@
       agents:
         - "/Common/{{ policy_agents.deny_ending.name }}"
       caption: "{{ policy_items.deny_ending.caption }}"
-      color: {{ policy_items.deny_ending.color }}
+      color: "{{ policy_items.deny_ending.color }}"
       itemType: "{{ policy_items.deny_ending.item_type }}"
     status_code: [200, 201, 409]
     timeout: 30
@@ -170,7 +170,7 @@
       agents:
         - "/Common/{{ policy_agents.allow_ending.name }}"
       caption: "{{ policy_items.allow_ending.caption }}"
-      color: {{ policy_items.allow_ending.color }}
+      color: "{{ policy_items.allow_ending.color }}"
       itemType: "{{ policy_items.allow_ending.item_type }}"
     status_code: [200, 201, 409]
     timeout: 30
@@ -193,7 +193,7 @@
       agents:
         - "/Common/{{ policy_agents.ad_auth.name }}"
       caption: "{{ policy_items.ad_auth.caption }}"
-      color: {{ policy_items.ad_auth.color }}
+      color: "{{ policy_items.ad_auth.color }}"
       itemType: "{{ policy_items.ad_auth.item_type }}"
       rules:
         - caption: "Successful"
@@ -222,7 +222,7 @@
       agents:
         - "/Common/{{ policy_agents.logon_page.name }}"
       caption: "{{ policy_items.logon_page.caption }}"
-      color: {{ policy_items.logon_page.color }}
+      color: "{{ policy_items.logon_page.color }}"
       itemType: "{{ policy_items.logon_page.item_type }}"
       rules:
         - caption: "fallback"
@@ -246,7 +246,7 @@
       partition: "Common"
       accessPolicy: "/Common/{{ access_policy.name }}"
       caption: "{{ policy_items.start.caption }}"
-      color: {{ policy_items.start.color }}
+      color: "{{ policy_items.start.color }}"
       itemType: "{{ policy_items.start.item_type }}"
       rules:
         - caption: "fallback"
@@ -303,15 +303,15 @@
         - "{{ access_profile.accept_languages[0] }}"
       defaultLanguage: "{{ access_profile.default_language }}"
       accessPolicy: "/Common/{{ access_policy.name }}"
-      accessPolicyTimeout: {{ access_profile.access_policy_timeout }}
-      inactivityTimeout: {{ access_profile.inactivity_timeout }}
-      logoutUriTimeout: {{ access_profile.logout_uri_timeout }}
-      maxConcurrentSessions: {{ access_profile.max_concurrent_sessions }}
-      maxConcurrentUsers: {{ access_profile.max_concurrent_users }}
-      maxFailureDelay: {{ access_profile.max_failure_delay }}
-      maxInProgressSessions: {{ access_profile.max_in_progress_sessions }}
-      maxSessionTimeout: {{ access_profile.max_session_timeout }}
-      minFailureDelay: {{ access_profile.min_failure_delay }}
+      accessPolicyTimeout: "{{ access_profile.access_policy_timeout }}"
+      inactivityTimeout: "{{ access_profile.inactivity_timeout }}"
+      logoutUriTimeout: "{{ access_profile.logout_uri_timeout }}"
+      maxConcurrentSessions: "{{ access_profile.max_concurrent_sessions }}"
+      maxConcurrentUsers: "{{ access_profile.max_concurrent_users }}"
+      maxFailureDelay: "{{ access_profile.max_failure_delay }}"
+      maxInProgressSessions: "{{ access_profile.max_in_progress_sessions }}"
+      maxSessionTimeout: "{{ access_profile.max_session_timeout }}"
+      minFailureDelay: "{{ access_profile.min_failure_delay }}"
       httponlyCookie: "{{ access_profile.httponly_cookie }}"
       persistentCookie: "{{ access_profile.persistent_cookie }}"
       restrictToSingleClientIp: "{{ access_profile.restrict_to_single_client_ip }}"

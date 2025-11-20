@@ -24,7 +24,7 @@
       wantAssertionEncrypted: "{{ saml_sp_connector.want_assertion_encrypted }}"
       assertionConsumerServices:
         - binding: "{{ saml_sp_connector.acs_binding }}"
-          index: {{ saml_sp_connector.acs_index }}
+          index: "{{ saml_sp_connector.acs_index }}"
           isDefault: "{{ saml_sp_connector.acs_is_default }}"
           uri: "{{ saml_sp_connector.acs_url }}"
       singleLogoutServices:

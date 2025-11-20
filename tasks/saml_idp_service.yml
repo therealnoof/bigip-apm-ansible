@@ -22,7 +22,7 @@
       idpCertificate: "{{ saml_idp_service.idp_certificate }}"
       encryptionType: "{{ saml_idp_service.encryption_type }}"
       keyTransportAlgorithm: "{{ saml_idp_service.key_transport_algorithm }}"
-      assertionValidity: {{ saml_idp_service.assertion_validity }}
+      assertionValidity: "{{ saml_idp_service.assertion_validity }}"
       subjectType: "{{ saml_idp_service.subject_type }}"
       subjectValue: "{{ saml_idp_service.subject_value }}"
       authContextMethod: "{{ saml_idp_service.auth_context_method }}"
