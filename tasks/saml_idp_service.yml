@@ -14,11 +14,11 @@
     body_format: json
     body:
       name: "{{ saml_idp_service.name }}"
-      description: "{{ saml_idp_service.description }}"
+      partition: "Common"
       entityId: "{{ saml_idp_service.entity_id }}"
       idpHost: "{{ saml_idp_service.idp_host }}"
       idpScheme: "{{ saml_idp_service.idp_scheme }}"
-      idpSignKey: "{{ saml_idp_service.signature_key }}"
+      idpSignkey: "{{ saml_idp_service.signature_key }}"
       idpCertificate: "{{ saml_idp_service.idp_certificate }}"
       encryptionType: "{{ saml_idp_service.encryption_type }}"
       keyTransportAlgorithm: "{{ saml_idp_service.key_transport_algorithm }}"
@@ -26,11 +26,14 @@
       subjectType: "{{ saml_idp_service.subject_type }}"
       subjectValue: "{{ saml_idp_service.subject_value }}"
       authContextMethod: "{{ saml_idp_service.auth_context_method }}"
-      samlProfiles: "{{ saml_idp_service.saml_profiles }}"
+      encryptSubject: "false"
+      encryptionTypeSubject: "{{ saml_idp_service.encryption_type }}"
+      locationSpecific: "false"
       logLevel: "{{ saml_idp_service.log_level }}"
+      samlProfiles: "{{ saml_idp_service.saml_profiles }}"
       spConnectors:
         - "{{ saml_idp_service.sp_connector }}"
-      samlAttributes: "{{ saml_idp_service.attributes }}"
+      attributes: "{{ saml_idp_service.attributes }}"
     status_code: [200, 201, 409]
     timeout: 30
   delegate_to: localhost

@@ -112,7 +112,8 @@ saml_idp_service:
   auth_context_method: "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
 
   # SAML profiles
-  saml_profiles: "web-browser-sso"
+  saml_profiles:
+    - "web-browser-sso"
   log_level: "notice"
 
   # Service Provider connector reference
@@ -120,9 +121,12 @@ saml_idp_service:
 
   # Attribute mapping
   attributes:
-    - name: "name"
-      type: "username"
-      value: "sAMAccountName"
+    - encrypt: "false"
+      encryptionType: "aes128"
+      multiValues:
+        - "%{session.logon.last.username}"
+      tmName: "sAMAccountName"
+      nameFormat: "unspecified"
 
 # APM Access Policy Settings
 access_policy:
