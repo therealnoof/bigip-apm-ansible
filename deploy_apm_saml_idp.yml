@@ -124,9 +124,9 @@
           adminName: "{{ ad_aaa_server.admin_name }}"
           domain: "{{ ad_aaa_server.domain }}"
           pool: "{{ ad_aaa_server.pool }}"
-          timeout: {{ ad_aaa_server.timeout }}
-          groupCacheTtl: {{ ad_aaa_server.group_cache_ttl }}
-          psoCacheTtl: {{ ad_aaa_server.pso_cache_ttl }}
+          timeout: "{{ ad_aaa_server.timeout }}"
+          groupCacheTtl: "{{ ad_aaa_server.group_cache_ttl }}"
+          psoCacheTtl: "{{ ad_aaa_server.pso_cache_ttl }}"
           usePool: "{{ ad_aaa_server.use_pool }}"
           locationSpecific: "{{ ad_aaa_server.location_specific }}"
           cleanupCache: "none"
