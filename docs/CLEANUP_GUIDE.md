@@ -4,7 +4,33 @@ Guide for safely removing F5 BIG-IP APM configurations using the delete playbook
 
 ## Overview
 
-The `delete_apm_vpn.yml` playbook provides a safe, automated way to remove all APM solution components from BIG-IP devices. It supports both Solution 1 (VPN) and Solution 2 (Portal Access).
+This repository provides two types of cleanup playbooks for removing APM configurations:
+
+### Delete Playbooks (Interactive with Confirmation)
+- **`delete_apm_vpn.yml`** - Solution 1 (VPN with Network Access)
+- **`delete_apm_portal.yml`** - Solution 2 (Portal Access with AD Group Mapping)
+
+These playbooks provide safe, interactive deletion with confirmation prompts and detailed status reporting.
+
+### Cleanup Playbooks (Automated, No Confirmation)
+- **`cleanup_apm_vpn.yml`** - Solution 1 cleanup
+- **`cleanup_apm_portal.yml`** - Solution 2 cleanup
+
+These playbooks are designed for automated cleanup during development/testing. They run without confirmation and are useful for:
+- Pre-deployment cleanup to ensure clean state
+- Removing objects that persist after running delete playbooks
+- CI/CD pipeline integration
+
+**💡 PRO TIP:** Some APM objects may remain after running the delete playbooks (especially policy items, agents, and customization groups). If this occurs, run the corresponding cleanup playbook to finish the job:
+```bash
+# For Solution 1
+ansible-playbook delete_apm_vpn.yml        # Interactive deletion
+ansible-playbook cleanup_apm_vpn.yml       # Clean up any remaining objects
+
+# For Solution 2
+ansible-playbook delete_apm_portal.yml     # Interactive deletion
+ansible-playbook cleanup_apm_portal.yml    # Clean up any remaining objects
+```
 
 **Sources:**
 - [solution1-delete Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution1/postman/solution1-delete.postman_collection.json)
@@ -129,27 +155,25 @@ Type 'DELETE' to confirm deletion (Ctrl+C to cancel):
 
 ### Delete Solution 2 (Portal)
 
-To delete Solution 2 with portal resources, you need to load solution2.yml variables:
+For Solution 2, use the dedicated portal delete playbook:
 
 ```bash
-# Method 1: Load vars file explicitly
-ansible-playbook delete_apm_vpn.yml -e "@vars/solution2.yml"
-
-# Method 2: Override solution name only (simpler)
-ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2"
+ansible-playbook delete_apm_portal.yml
 ```
-
-**Note:** Method 2 works if you just need to delete by name, but Method 1 ensures portal_resources variable is loaded for proper deletion confirmation.
 
 **You will see:**
 ```
-WARNING: APM Solution Deletion
+WARNING: APM Portal Access Solution Deletion
 This will DELETE all components for: solution2
 
 Components to be removed:
 - Access Profile: /Common/solution2-psp
 - Access Policy: /Common/solution2-psp
 - Portal Resources: 4 web applications
+  - server1: https://server1.acme.com
+  - server2: https://server2.acme.com
+  - server3: https://server3.acme.com
+  - server4: https://server4.acme.com
 - Webtop: /Common/solution2-webtop
 - Network Access: /Common/solution2-vpn (if configured)
 - ... [full list] ...
@@ -168,10 +192,61 @@ For automation/CI-CD pipelines only:
 ansible-playbook delete_apm_vpn.yml -e "confirm_delete=true"
 
 # Solution 2
-ansible-playbook delete_apm_vpn.yml -e "@vars/solution2.yml" -e "confirm_delete=true"
+ansible-playbook delete_apm_portal.yml -e "confirm_delete=true"
 ```
 
 **WARNING:** This skips the confirmation prompt entirely. Use with extreme caution!
+
+### Cleanup Playbooks (Automated)
+
+The cleanup playbooks run without confirmation and are ideal for automated workflows:
+
+**Solution 1:**
+```bash
+# Clean up all Solution 1 (VPN) objects
+ansible-playbook cleanup_apm_vpn.yml
+```
+
+**Solution 2:**
+```bash
+# Clean up all Solution 2 (Portal) objects
+ansible-playbook cleanup_apm_portal.yml
+```
+
+**When to use cleanup playbooks:**
+1. **Pre-deployment cleanup** - Ensure clean state before deploying:
+   ```bash
+   ansible-playbook cleanup_apm_vpn.yml
+   ansible-playbook deploy_apm_vpn.yml
+   ```
+
+2. **Post-delete cleanup** - Remove stubborn objects after delete playbook:
+   ```bash
+   ansible-playbook delete_apm_vpn.yml
+   ansible-playbook cleanup_apm_vpn.yml  # Clean up any remaining objects
+   ```
+
+3. **CI/CD automation** - No user interaction required:
+   ```bash
+   # In your pipeline script
+   ansible-playbook cleanup_apm_vpn.yml || true  # Continue even if some objects don't exist
+   ansible-playbook deploy_apm_vpn.yml
+   ```
+
+**What cleanup playbooks remove:**
+- Access profiles and policies
+- All policy items (entry, actions, endings)
+- All agents (logon, AD auth, resource assign, etc.)
+- All customization groups (baseline and resource-specific)
+- Connectivity profiles
+- Network access resources
+- Portal access resources (Solution 2)
+- Webtops and sections
+- Lease pools
+- AD servers
+- AS3 tenants (if deployed)
+
+**Note:** Cleanup playbooks accept `200` (deleted) or `404` (not found) status codes, making them safe to run multiple times.
 
 ### Target Specific Host
 
@@ -297,10 +372,12 @@ ok: [bigip-01] => {
 Reset lab to clean state:
 
 ```bash
-# Delete current configuration
-ansible-playbook delete_apm_vpn.yml -e "confirm_delete=true"
+# Method 1: Using delete playbook (with confirmation)
+ansible-playbook delete_apm_vpn.yml
+ansible-playbook deploy_apm_vpn.yml
 
-# Redeploy fresh configuration
+# Method 2: Using cleanup playbook (faster, no confirmation)
+ansible-playbook cleanup_apm_vpn.yml
 ansible-playbook deploy_apm_vpn.yml
 ```
 
@@ -309,18 +386,42 @@ ansible-playbook deploy_apm_vpn.yml
 If deployment fails mid-way, clean up partial configuration:
 
 ```bash
+# Interactive cleanup
 ansible-playbook delete_apm_vpn.yml
+
+# Or automated cleanup
+ansible-playbook cleanup_apm_vpn.yml
 ```
 
-The delete playbook handles partial configurations gracefully.
+Both playbooks handle partial configurations gracefully.
 
-### 3. Change Solution Name
+### 3. Stubborn Objects After Deletion
+
+If objects remain after running delete playbook:
+
+```bash
+# Solution 1
+ansible-playbook delete_apm_vpn.yml      # Interactive deletion
+ansible-playbook cleanup_apm_vpn.yml     # Clean up remaining objects
+
+# Solution 2
+ansible-playbook delete_apm_portal.yml   # Interactive deletion
+ansible-playbook cleanup_apm_portal.yml  # Clean up remaining objects
+```
+
+This is especially useful for:
+- Policy items that don't auto-delete with the policy
+- Agents that remain after policy deletion
+- Customization groups that persist
+- Resource objects with dependency issues
+
+### 4. Change Solution Name
 
 To change from solution1 to myvpn:
 
 ```bash
-# Delete with old name
-ansible-playbook delete_apm_vpn.yml  # uses vs1_name: solution1
+# Clean up with old name
+ansible-playbook cleanup_apm_vpn.yml  # uses vs1_name: solution1
 
 # Update vars/main.yml
 vi vars/main.yml
@@ -330,19 +431,18 @@ vi vars/main.yml
 ansible-playbook deploy_apm_vpn.yml
 ```
 
-### 4. Remove Multiple Solutions
+### 5. Remove Multiple Solutions
 
-If you have multiple VPN solutions deployed:
+If you have multiple solutions deployed:
 
 ```bash
-# Delete solution1
-ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution1" -e "confirm_delete=true"
+# Delete Solution 1 (VPN)
+ansible-playbook delete_apm_vpn.yml -e "confirm_delete=true"
+ansible-playbook cleanup_apm_vpn.yml
 
-# Delete solution2
-ansible-playbook delete_apm_vpn.yml -e "vs1_name=solution2" -e "confirm_delete=true"
-
-# Delete myvpn
-ansible-playbook delete_apm_vpn.yml -e "vs1_name=myvpn" -e "confirm_delete=true"
+# Delete Solution 2 (Portal)
+ansible-playbook delete_apm_portal.yml -e "confirm_delete=true"
+ansible-playbook cleanup_apm_portal.yml
 ```
 
 ## Troubleshooting
@@ -397,17 +497,27 @@ ansible-playbook delete_apm_vpn.yml -e "vs1_name=myvpn" -e "confirm_delete=true"
 
 **Problem:** Customization groups still exist after policy deletion
 
-**Solution:** These should auto-delete, but if they remain:
+**Solutions:**
 
-```bash
-# List customization groups
-tmsh list apm policy customization-group all-properties | grep solution1
+1. **Use cleanup playbook (recommended):**
+   ```bash
+   # Solution 1
+   ansible-playbook cleanup_apm_vpn.yml
 
-# Delete manually if needed
-tmsh delete apm policy customization-group /Common/solution1-psp_logout
-tmsh delete apm policy customization-group /Common/solution1-psp_eps
-# ... etc
-```
+   # Solution 2
+   ansible-playbook cleanup_apm_portal.yml
+   ```
+
+2. **Manual deletion:**
+   ```bash
+   # List customization groups
+   tmsh list apm policy customization-group all-properties | grep solution1
+
+   # Delete manually if needed
+   tmsh delete apm policy customization-group /Common/solution1-psp_logout
+   tmsh delete apm policy customization-group /Common/solution1-psp_eps
+   # ... etc
+   ```
 
 ### AS3 Partition Won't Delete
 
@@ -615,33 +725,126 @@ ansible-playbook deploy_apm_vpn.yml
 ### GitLab CI Example
 
 ```yaml
+# Automated cleanup before deployment
+deploy_solution1:
+  stage: deploy
+  script:
+    - ansible-playbook cleanup_apm_vpn.yml
+    - ansible-playbook deploy_apm_vpn.yml
+  only:
+    - development
+
+# Manual cleanup/deletion
 cleanup_dev:
   stage: cleanup
   script:
     - ansible-playbook delete_apm_vpn.yml -e "confirm_delete=true"
+    - ansible-playbook cleanup_apm_vpn.yml  # Clean up any remaining objects
   when: manual
   only:
     - development
   environment:
     name: development
     action: delete
+
+# Solution 2 deployment
+deploy_solution2:
+  stage: deploy
+  script:
+    - ansible-playbook cleanup_apm_portal.yml
+    - ansible-playbook deploy_apm_portal.yml
+  only:
+    - development
 ```
 
 ### Jenkins Pipeline
 
 ```groovy
-stage('Cleanup') {
+stage('Cleanup and Deploy') {
+    steps {
+        // Clean environment before deployment
+        ansiblePlaybook(
+            playbook: 'cleanup_apm_vpn.yml',
+            inventory: 'inventory.yml',
+            colorized: true
+        )
+
+        // Deploy solution
+        ansiblePlaybook(
+            playbook: 'deploy_apm_vpn.yml',
+            inventory: 'inventory.yml',
+            colorized: true
+        )
+    }
+}
+
+stage('Teardown') {
     when {
         expression { params.CLEANUP == true }
     }
     steps {
+        // Interactive delete with cleanup
         ansiblePlaybook(
             playbook: 'delete_apm_vpn.yml',
             inventory: 'inventory.yml',
             extras: '-e "confirm_delete=true"'
         )
+
+        // Ensure complete cleanup
+        ansiblePlaybook(
+            playbook: 'cleanup_apm_vpn.yml',
+            inventory: 'inventory.yml',
+            colorized: true
+        )
     }
 }
+```
+
+### GitHub Actions Example
+
+```yaml
+name: Deploy APM Solution
+
+on:
+  workflow_dispatch:
+    inputs:
+      solution:
+        description: 'Solution to deploy'
+        required: true
+        type: choice
+        options:
+          - solution1
+          - solution2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Cleanup existing deployment
+        run: |
+          if [ "${{ inputs.solution }}" == "solution1" ]; then
+            ansible-playbook cleanup_apm_vpn.yml
+          else
+            ansible-playbook cleanup_apm_portal.yml
+          fi
+
+      - name: Deploy solution
+        run: |
+          if [ "${{ inputs.solution }}" == "solution1" ]; then
+            ansible-playbook deploy_apm_vpn.yml
+          else
+            ansible-playbook deploy_apm_portal.yml
+          fi
 ```
 
 ## Related Documentation
