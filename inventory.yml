@@ -11,7 +11,7 @@ all:
         bigip-01:
           ansible_host: 10.1.1.4
           bigip_user: admin
-          bigip_pass: f5Twister!
+          bigip_pass: admin
 
         # Additional BIG-IP devices (uncomment to use)
         # bigip-02:
