@@ -1,0 +1,99 @@
+---
+###############################################
+# SAML IDP Connector for Internal BIG-IP IDP
+# Solution 5 - Creates IDP connector pointing to internal IDP (Solution 4)
+###############################################
+
+- name: Create SAML IDP Connector for internal IDP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ saml_idp_connector.name }}"
+      partition: "Common"
+      entityId: "{{ saml_idp_connector.entity_id }}"
+      ssoUri: "{{ saml_idp_connector.sso_uri }}"
+      ssoBinding: "{{ saml_idp_connector.sso_binding }}"
+      singleLogoutUri: "{{ saml_idp_connector.slo_uri }}"
+      singleLogoutResponseUri: "{{ saml_idp_connector.slo_response_uri }}"
+      singleLogoutBinding: "{{ saml_idp_connector.slo_binding }}"
+      signatureType: "{{ saml_idp_connector.signature_type }}"
+      identityLocation: "{{ saml_idp_connector.identity_location }}"
+      idpCertificate: "{{ saml_idp_connector.idp_certificate }}"
+      artifactResolutionServiceAddr: "{{ saml_idp_connector.artifact_resolution_service_addr }}"
+      artifactResolutionServicePort: "{{ saml_idp_connector.artifact_resolution_service_port }}"
+      locationSpecific: "{{ saml_idp_connector.location_specific }}"
+      signArtifactResolutionRq: "{{ saml_idp_connector.sign_artifact_resolution_rq }}"
+      wantAuthnRequestSigned: "{{ saml_idp_connector.want_authn_request_signed }}"
+      wantDetachedSignature: "{{ saml_idp_connector.want_detached_signature }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: idp_connector_result
+  changed_when: idp_connector_result.status in [200, 201]
+  failed_when: idp_connector_result.status not in [200, 201, 409]
+
+- name: Display IDP Connector result
+  debug:
+    msg:
+      - "IDP Connector Status: {{ idp_connector_result.status }}"
+      - "IDP Connector Name: {{ saml_idp_connector.name }}"
+      - "IDP Entity ID: {{ saml_idp_connector.entity_id }}"
+      - "SSO URI: {{ saml_idp_connector.sso_uri }}"
+  when: idp_connector_result.status in [200, 201, 409]
+
+###############################################
+# SAML Service Provider Configuration
+###############################################
+
+- name: Create SAML Service Provider
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ saml_sp.name }}"
+      partition: "Common"
+      entityId: "{{ saml_sp.entity_id }}"
+      spHost: "{{ saml_sp.sp_host }}"
+      spScheme: "{{ saml_sp.sp_scheme }}"
+      assertionConsumerBinding: "{{ saml_sp.assertion_consumer_binding }}"
+      authContextComparisonMethod: "{{ saml_sp.auth_context_comparison_method }}"
+      forceAuthn: "{{ saml_sp.force_authn }}"
+      isAuthnRequestSigned: "{{ saml_sp.is_authn_request_signed }}"
+      spCertificate: "{{ saml_sp.sp_certificate }}"
+      spSignkey: "{{ saml_sp.sp_sign_key }}"
+      nameIdPolicyAllowCreate: "{{ saml_sp.name_id_policy_allow_create }}"
+      wantAssertionEncrypted: "{{ saml_sp.want_assertion_encrypted }}"
+      wantAssertionSigned: "{{ saml_sp.want_assertion_signed }}"
+      locationSpecific: "{{ saml_sp.location_specific }}"
+      idpConnectors:
+        - name: "{{ saml_idp_connector.name }}"
+          partition: "Common"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: sp_result
+  changed_when: sp_result.status in [200, 201]
+  failed_when: sp_result.status not in [200, 201, 409]
+
+- name: Display SAML SP result
+  debug:
+    msg:
+      - "SAML SP Status: {{ sp_result.status }}"
+      - "SAML SP Name: {{ saml_sp.name }}"
+      - "SP Entity ID: {{ saml_sp.entity_id }}"
+      - "SP Host: {{ saml_sp.sp_host }}"
+      - "Linked IDP Connector: {{ saml_idp_connector.name }}"
+  when: sp_result.status in [200, 201, 409]

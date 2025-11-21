@@ -1,0 +1,363 @@
+---
+###############################################
+# Access Policy Creation for Solution 5
+# Per-session policy with SAML authentication (Internal IDP)
+# Flow: Start → SAML Auth → Allow/Deny
+###############################################
+
+# Note: Transaction is created in the parent playbook, transaction_id is already set
+
+###############################################
+# Customization Groups
+###############################################
+
+- name: Create baseline customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_{{ item.type }}"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "{{ item.api_type }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  loop:
+    - { type: "logout", api_type: "logout" }
+    - { type: "eps", api_type: "eps" }
+    - { type: "errormap", api_type: "errormap" }
+    - { type: "framework_installation", api_type: "framework-installation" }
+    - { type: "general_ui", api_type: "general-ui" }
+  loop_control:
+    label: "{{ item.type }}"
+  register: customization_groups_result
+  changed_when: customization_groups_result.status in [200, 201]
+  failed_when: customization_groups_result.status not in [200, 201, 409]
+
+###############################################
+# Deny Ending
+###############################################
+
+- name: Create deny ending customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny_ag"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "logout"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: deny_customization_result
+  changed_when: deny_customization_result.status in [200, 201]
+  failed_when: deny_customization_result.status not in [200, 201, 409]
+
+- name: Create deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_agents.deny_ending.name }}"
+      partition: "Common"
+      customizationGroup: "{{ policy_agents.deny_ending.customization_group }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: deny_agent_result
+  changed_when: deny_agent_result.status in [200, 201]
+  failed_when: deny_agent_result.status not in [200, 201, 409]
+
+- name: Create deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_items.deny_ending.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.deny_ending.caption }}"
+      color: "{{ policy_items.deny_ending.color }}"
+      itemType: "{{ policy_items.deny_ending.item_type }}"
+      agents:
+        - name: "{{ policy_agents.deny_ending.name }}"
+          partition: "Common"
+          type: "{{ policy_items.deny_ending.agent_type }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: deny_item_result
+  changed_when: deny_item_result.status in [200, 201]
+  failed_when: deny_item_result.status not in [200, 201, 409]
+
+###############################################
+# Allow Ending
+###############################################
+
+- name: Create allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_agents.allow_ending.name }}"
+      partition: "Common"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: allow_agent_result
+  changed_when: allow_agent_result.status in [200, 201]
+  failed_when: allow_agent_result.status not in [200, 201, 409]
+
+- name: Create allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_items.allow_ending.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.allow_ending.caption }}"
+      color: "{{ policy_items.allow_ending.color }}"
+      itemType: "{{ policy_items.allow_ending.item_type }}"
+      agents:
+        - name: "{{ policy_agents.allow_ending.name }}"
+          partition: "Common"
+          type: "{{ policy_items.allow_ending.agent_type }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: allow_item_result
+  changed_when: allow_item_result.status in [200, 201]
+  failed_when: allow_item_result.status not in [200, 201, 409]
+
+###############################################
+# SAML Authentication Action
+###############################################
+
+- name: Create SAML authentication agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-saml/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_agents.saml_auth.name }}"
+      partition: "Common"
+      forceAuthn: "{{ policy_agents.saml_auth.force_authn }}"
+      server: "{{ policy_agents.saml_auth.server }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: saml_agent_result
+  changed_when: saml_agent_result.status in [200, 201]
+  failed_when: saml_agent_result.status not in [200, 201, 409]
+
+- name: Create SAML authentication policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_items.saml_auth.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.saml_auth.caption }}"
+      color: "{{ policy_items.saml_auth.color }}"
+      itemType: "{{ policy_items.saml_auth.item_type }}"
+      loop: "{{ policy_items.saml_auth.loop }}"
+      agents:
+        - name: "{{ policy_agents.saml_auth.name }}"
+          partition: "Common"
+          type: "{{ policy_items.saml_auth.agent_type }}"
+      rules:
+        - caption: "Successful"
+          expression: "{{ policy_items.saml_auth.success_expression }}"
+          nextItem: "{{ policy_items.saml_auth.success_next_item }}"
+        - caption: "fallback"
+          nextItem: "{{ policy_items.saml_auth.fallback_next_item }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: saml_item_result
+  changed_when: saml_item_result.status in [200, 201]
+  failed_when: saml_item_result.status not in [200, 201, 409]
+
+###############################################
+# Start Policy Item
+###############################################
+
+- name: Create start policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_items.start.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.start.caption }}"
+      color: "{{ policy_items.start.color }}"
+      itemType: "{{ policy_items.start.item_type }}"
+      loop: "{{ policy_items.start.loop }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ policy_items.start.next_item }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: start_item_result
+  changed_when: start_item_result.status in [200, 201]
+  failed_when: start_item_result.status not in [200, 201, 409]
+
+###############################################
+# Access Policy Assembly
+###############################################
+
+- name: Create access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ access_policy.name }}"
+      partition: "Common"
+      defaultEnding: "{{ policy_items.deny_ending.name }}"
+      maxMacroLoopCount: "{{ access_policy.max_macro_loop_count }}"
+      oneshotMacro: "{{ access_policy.oneshot_macro }}"
+      startItem: "{{ policy_items.start.name }}"
+      type: "{{ access_policy.type }}"
+      items:
+        - name: "{{ policy_items.saml_auth.name }}"
+          partition: "Common"
+        - name: "{{ policy_items.allow_ending.name }}"
+          partition: "Common"
+        - name: "{{ policy_items.deny_ending.name }}"
+          partition: "Common"
+        - name: "{{ policy_items.start.name }}"
+          partition: "Common"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: access_policy_result
+  changed_when: access_policy_result.status in [200, 201]
+  failed_when: access_policy_result.status not in [200, 201, 409]
+
+- name: Debug Access Policy Result
+  debug:
+    msg:
+      - "Access Policy Status: {{ access_policy_result.status }}"
+      - "Access Policy Name: {{ access_policy.name }}"
+  when: access_policy_result.status in [200, 201, 409]
+
+###############################################
+# Access Profile Creation
+###############################################
+
+- name: Create access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ bigip_validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ transaction_id }}"
+    body_format: json
+    body:
+      name: "{{ access_profile.name }}"
+      partition: "Common"
+      acceptLanguages: "{{ access_profile.accept_languages }}"
+      accessPolicy: "/Common/{{ access_policy.name }}"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_logout"
+      epsGroup: "/Common/{{ vs1_name }}-psp_eps"
+      errormapGroup: "/Common/{{ vs1_name }}-psp_errormap"
+      frameworkInstallationGroup: "/Common/{{ vs1_name }}-psp_framework_installation"
+      generalUiGroup: "/Common/{{ vs1_name }}-psp_general_ui"
+      accessPolicyTimeout: "{{ access_profile.access_policy_timeout }}"
+      defaultLanguage: "{{ access_profile.default_language }}"
+      httponlyCookie: "{{ access_profile.httponly_cookie }}"
+      inactivityTimeout: "{{ access_profile.inactivity_timeout }}"
+      logoutUriTimeout: "{{ access_profile.logout_uri_timeout }}"
+      maxConcurrentSessions: "{{ access_profile.max_concurrent_sessions }}"
+      maxConcurrentUsers: "{{ access_profile.max_concurrent_users }}"
+      maxFailureDelay: "{{ access_profile.max_failure_delay }}"
+      maxInProgressSessions: "{{ access_profile.max_in_progress_sessions }}"
+      maxSessionTimeout: "{{ access_profile.max_session_timeout }}"
+      minFailureDelay: "{{ access_profile.min_failure_delay }}"
+      modifiedSinceLastPolicySync: "false"
+      persistentCookie: "{{ access_profile.persistent_cookie }}"
+      restrictToSingleClientIp: "{{ access_profile.restrict_to_single_client_ip }}"
+      scope: "{{ access_profile.scope }}"
+      secureCookie: "{{ access_profile.secure_cookie }}"
+      type: "{{ access_profile.type }}"
+      useHttp_503OnError: "{{ access_profile.use_http_503_on_error }}"
+      userIdentityMethod: "{{ access_profile.user_identity_method }}"
+      logSettings: "{{ access_profile.log_settings }}"
+    status_code: [200, 201, 409]
+    timeout: 60
+  delegate_to: localhost
+  register: access_profile_result
+  changed_when: access_profile_result.status in [200, 201]
+  failed_when: access_profile_result.status not in [200, 201, 409]
+
+- name: Debug Access Profile Result
+  debug:
+    msg:
+      - "Access Profile Status: {{ access_profile_result.status }}"
+      - "Access Profile Name: {{ access_profile.name }}"
+      - "Policy Timeout: {{ access_profile.access_policy_timeout }}s"
+      - "Session Timeout: {{ access_profile.max_session_timeout }}s"
+  when: access_profile_result.status in [200, 201, 409]

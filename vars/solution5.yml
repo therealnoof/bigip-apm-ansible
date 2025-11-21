@@ -1,0 +1,246 @@
+---
+###############################################
+# Solution 5 Variables - SAML Service Provider with Internal BIG-IP IDP
+# This solution deploys SAML SP authentication using an internal BIG-IP as IDP
+# Requires Solution 4 (SAML IDP) to be deployed first
+###############################################
+
+# BIG-IP Connection Details
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+bigip_validate_certs: no
+
+# Solution name (used as prefix for all objects)
+vs1_name: "solution5"
+
+# DNS and domain configuration
+dns1_name: "sp.acme.com"      # SAML Service Provider FQDN
+dns2_name: "idp.acme.com"     # Internal SAML IDP FQDN (Solution 4)
+path_name: "solution5"
+partition_name: "solution5"
+
+# Customization type (modern, standard)
+custom_type: "modern"
+
+# Feature flags
+create_as3_application: true
+create_gslb: false
+
+###############################################
+# SAML IDP Connector Configuration
+# This connects to the internal BIG-IP IDP (Solution 4)
+###############################################
+saml_idp_connector:
+  name: "{{ vs1_name }}-sso"
+  entity_id: "https://{{ dns2_name }}"
+
+  # SSO Configuration - pointing to internal IDP
+  sso_uri: "https://{{ dns2_name }}/saml/idp/profile/redirectorpost/sso"
+  sso_binding: "http-post"
+
+  # Single Logout Configuration
+  slo_uri: "https://{{ dns2_name }}/saml/idp/profile/post/sls"
+  slo_response_uri: "https://{{ dns2_name }}/saml/idp/profile/post/slr"
+  slo_binding: "http-post"
+
+  # Signature Configuration
+  signature_type: "rsa-sha256"
+  identity_location: "subject"
+
+  # Certificate - use the IDP's certificate for signature validation
+  # This should match the certificate used by Solution 4 IDP
+  # Options: "acme.com-wildcard" (if you have a wildcard cert) or "idp-saml" (Solution 4 self-signed)
+  idp_certificate: "/Common/acme.com-wildcard"
+
+  # Artifact Resolution (typically not used with POST binding)
+  artifact_resolution_service_addr: "any6"
+  artifact_resolution_service_port: 0
+
+  # Additional Settings
+  location_specific: "false"
+  sign_artifact_resolution_rq: "false"
+  want_authn_request_signed: "false"
+  want_detached_signature: "false"
+
+###############################################
+# SAML Service Provider Configuration
+###############################################
+saml_sp:
+  name: "{{ dns1_name }}-sp"
+  entity_id: "https://{{ dns1_name }}"
+  sp_host: "{{ dns1_name }}"
+  sp_scheme: "https"
+
+  # Assertion Consumer Service
+  assertion_consumer_binding: "http-post"
+
+  # Authentication Request Settings
+  auth_context_comparison_method: "exact"
+  force_authn: "false"
+  is_authn_request_signed: "true"
+
+  # SP Certificate for signing requests
+  # Use your wildcard cert or generate a specific one for the SP
+  sp_certificate: "/Common/acme.com-wildcard"
+  sp_sign_key: "/Common/acme.com-wildcard"
+
+  # Name ID Policy
+  name_id_policy_allow_create: "true"
+
+  # Assertion Settings
+  want_assertion_encrypted: "false"
+  want_assertion_signed: "true"
+
+  # Location
+  location_specific: "false"
+
+###############################################
+# APM Access Policy Settings
+###############################################
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  type: "access-policy"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+
+###############################################
+# APM Access Profile Settings
+###############################################
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  accept_languages: ["en"]
+  default_language: "en"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  max_in_progress_sessions: 128
+  max_session_timeout: 604800  # 7 days
+  min_failure_delay: 2
+  httponly_cookie: "false"
+  persistent_cookie: "false"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  secure_cookie: "true"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  log_settings: ["/Common/default-log-setting"]
+
+###############################################
+# Customization Groups
+###############################################
+customization_groups:
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+###############################################
+# Policy Agents
+###############################################
+policy_agents:
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny_ag"
+    customization_group: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow_ag"
+
+  saml_auth:
+    name: "{{ vs1_name }}-psp_act_saml_auth_ag"
+    force_authn: "use-aaa-server-setting"
+    server: "/Common/{{ dns1_name }}-sp"
+
+###############################################
+# Policy Items
+###############################################
+policy_items:
+  start:
+    name: "{{ vs1_name }}-psp_ent"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    next_item: "/Common/{{ vs1_name }}-psp_act_saml_auth"
+
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  saml_auth:
+    name: "{{ vs1_name }}-psp_act_saml_auth"
+    caption: "SAML Auth"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-saml"
+    # Branching rules
+    success_expression: 'expr {[mcget {session.saml.last.result}] == 1}'
+    success_next_item: "/Common/{{ vs1_name }}-psp_end_allow"
+    fallback_next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+
+###############################################
+# AS3 Virtual Server Configuration
+###############################################
+as3_config:
+  virtual_address: "10.1.10.150"
+  virtual_port: 443
+  pool_members:
+    - "10.1.20.6:80"
+
+  # SSL/TLS Configuration
+  # Using default BIG-IP self-signed certificate
+  # To use your own certificate, change these to match your FQDN certificate name on BIG-IP
+  tls_cert_name: "default.crt"
+  tls_key_name: "default.key"
+
+  # Pool configuration
+  pool_name: "iis-pool"
+  pool_monitor: "tcp"
+
+  # SNAT configuration
+  snat: "auto"
+
+###############################################
+# GSLB Configuration (optional)
+###############################################
+gslb_config:
+  wideip_name: "{{ dns1_name }}"
+  pool_name: "{{ vs1_name }}-pool"
+  pool_members:
+    - ip: "10.1.10.150"
+      port: 443

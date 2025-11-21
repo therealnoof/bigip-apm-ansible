@@ -52,6 +52,20 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution4-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution4/postman/solution4-create.postman_collection.json)
 
+### Solution 5: SAML Service Provider with Internal BIG-IP IDP
+- **SAML Authentication** - SAML 2.0 Service Provider configuration
+- **Internal IDP Integration** - Connects to BIG-IP IDP (Solution 4) instead of external IDP
+- **Federation Flow** - SP redirects to internal IDP for AD authentication
+- **Access Policy** - Per-session policy with SAML authentication
+- **Application Deployment** - AS3-based HTTPS virtual server with APM profile
+- **GSLB** - Optional multi-datacenter DNS configuration
+
+**Use Case:** Internal federation where multiple applications (Service Providers) authenticate through a centralized BIG-IP Identity Provider, creating a unified SSO experience with Active Directory as the authentication backend.
+
+**Prerequisites:** Solution 4 (SAML IDP) must be deployed first.
+
+**Source:** [solution5-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution5/postman/solution5-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -340,6 +354,88 @@ Start → Logon Page → AD Authentication → Allow
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Solution 5: SAML SP with Internal IDP Flow
+
+```
+User → sp.acme.com (Solution 5 SP) → Redirect → idp.acme.com (Solution 4 IDP)
+                                                        │
+                                                        ▼
+                                              Logon Page → AD Auth
+                                                        │
+                                                        ▼ (Success)
+                                              SAML Assertion Generated
+                                                        │
+                                                        ▼
+                                              Redirect back to SP
+                                                        │
+                                                        ▼
+                                                      Allow
+```
+
+**Authentication Flow:**
+1. User accesses `https://sp.acme.com` (Solution 5)
+2. SP redirects to `https://idp.acme.com` (Solution 4 IDP)
+3. User authenticates via AD at the IDP
+4. IDP generates SAML assertion with AD attributes
+5. User redirected back to SP with assertion
+6. SP validates assertion and grants access
+
+### Components Architecture (Solution 5)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Browser Client                                           │
+└───────────────────┬─────────────────────────────────────┘
+                    │ HTTPS (443)
+                    │ Initial Request
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ F5 BIG-IP - APM SAML Service Provider (Solution 5)     │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Virtual Server (HTTPS) - sp.acme.com             │  │
+│  │ - Client SSL Profile                             │  │
+│  │ - Access Profile: solution5-psp                  │  │
+│  └──────────────────────────────────────────────────┘  │
+│                         │                                │
+│  ┌──────────────────────┼───────────────────────────┐  │
+│  │ Per-Session Policy   ▼                            │  │
+│  │                                                    │  │
+│  │  1. Start → 2. SAML Auth → 3. Allow/Deny         │  │
+│  │                  │                                │  │
+│  │                  │ Redirect to IDP               │  │
+│  │                  ▼                                │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ SAML SP Configuration                             │  │
+│  │ - SP Service: sp.acme.com-sp                     │  │
+│  │ - Entity ID: https://sp.acme.com                 │  │
+│  │ - IDP Connector: solution5-sso                   │  │
+│  │ - Points to: https://idp.acme.com                │  │
+│  └──────────────────────────────────────────────────┘  │
+└───────────────────┬─────────────────────────────────────┘
+                    │ SAML AuthnRequest
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ F5 BIG-IP - APM SAML Identity Provider (Solution 4)    │
+│ - idp.acme.com                                          │
+│ - AD Authentication                                      │
+│ - Issues SAML Assertions                                │
+└───────────────────┬─────────────────────────────────────┘
+                    │ SAML Response
+                    ▼
+              Back to SP with
+              SAML Assertion
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ Backend Application (IIS)                               │
+│ - 10.1.20.6:80                                          │
+│ - Accessed after successful SAML auth                   │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## Project Structure
 
 ```
@@ -352,19 +448,23 @@ bigip-apm-ansible/
 ├── deploy_apm_portal.yml             # Solution 2: Portal deployment playbook
 ├── deploy_apm_saml.yml               # Solution 3: SAML SP deployment playbook
 ├── deploy_apm_saml_idp.yml           # Solution 4: SAML IDP deployment playbook
+├── deploy_apm_saml_sp_internal.yml   # Solution 5: SAML SP with internal IDP
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
 ├── delete_apm_saml_idp.yml           # Solution 4: Interactive deletion playbook
+├── delete_apm_saml_sp_internal.yml   # Solution 5: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
 ├── cleanup_apm_saml_idp.yml          # Solution 4: Automated cleanup playbook
+├── cleanup_apm_saml_sp_internal.yml  # Solution 5: Automated cleanup playbook
 ├── vars/
 │   ├── main.yml                      # Solution 1 variables
 │   ├── solution2.yml                 # Solution 2 variables
 │   ├── solution3.yml                 # Solution 3 variables (SAML SP)
-│   └── solution4.yml                 # Solution 4 variables (SAML IDP)
+│   ├── solution4.yml                 # Solution 4 variables (SAML IDP)
+│   └── solution5.yml                 # Solution 5 variables (SAML SP internal)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -381,6 +481,8 @@ bigip-apm-ansible/
 │   ├── access_policy_solution2.yml    # Solution 2 policy with AD groups
 │   ├── access_policy_solution3.yml    # Solution 3 policy with SAML auth
 │   ├── access_policy_solution4.yml    # Solution 4 policy with AD + SAML IDP
+│   ├── access_policy_solution5.yml    # Solution 5 policy with SAML auth
+│   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
 │   ├── as3_deployment.yml            # Application deployment
 │   └── gslb_configuration.yml        # DNS/GSLB setup
 ├── templates/
@@ -396,7 +498,9 @@ bigip-apm-ansible/
     ├── solution3-create.postman_collection.json   # Solution 3 source
     ├── solution3-delete.postman_collection.json   # Solution 3 delete
     ├── solution4-create.postman_collection.json   # Solution 4 source
-    └── solution4-delete.postman_collection.json   # Solution 4 delete
+    ├── solution4-delete.postman_collection.json   # Solution 4 delete
+    ├── solution5-create.postman_collection.json   # Solution 5 source
+    └── solution5-delete.postman_collection.json   # Solution 5 delete
 
 ```
 
@@ -626,6 +730,62 @@ as3_config:
 - AD agent requires `type: "auth"` for profile compatibility
 - See `docs/API_MAPPING.md` for detailed implementation requirements
 
+### Solution 5: SAML SP with Internal IDP Deployment
+
+Deploy the SAML SP solution that uses an internal BIG-IP IDP (Solution 4):
+
+```bash
+ansible-playbook deploy_apm_saml_sp_internal.yml
+```
+
+**Prerequisites:**
+- Solution 4 (SAML IDP) must be deployed first at `idp.acme.com`
+- Wildcard certificate (`acme.com-wildcard`) or configure your own certs
+
+**Deploys:**
+- SAML IDP Connector pointing to internal IDP
+- SAML Service Provider configuration
+- SAML authentication access policy
+- Access profile with SAML settings
+- Optional AS3 virtual server deployment
+- Optional GSLB/DNS configuration
+
+**Configuration:**
+
+Before deploying, customize `vars/solution5.yml`:
+
+```yaml
+# Solution naming
+vs1_name: "solution5"
+dns1_name: "sp.acme.com"          # SAML SP hostname
+dns2_name: "idp.acme.com"         # Internal IDP hostname (Solution 4)
+
+# SAML IDP Connector (internal IDP)
+saml_idp_connector:
+  entity_id: "https://idp.acme.com"
+  sso_uri: "https://idp.acme.com/saml/idp/profile/redirectorpost/sso"
+  idp_certificate: "/Common/acme.com-wildcard"
+
+# SAML Service Provider
+saml_sp:
+  entity_id: "https://sp.acme.com"
+  sp_host: "sp.acme.com"
+  sp_certificate: "/Common/acme.com-wildcard"
+
+# Virtual Server
+as3_config:
+  virtual_address: "10.1.10.150"
+  pool_members:
+    - "10.1.20.6:80"
+```
+
+**Authentication Flow:**
+1. User accesses `https://sp.acme.com`
+2. Redirected to `https://idp.acme.com` (Solution 4 IDP)
+3. User authenticates via AD at IDP
+4. SAML assertion returned to SP
+5. Access granted to backend application
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -725,15 +885,37 @@ ansible-playbook delete_apm_saml_idp.yml
 - AS3 application partition (if deployed)
 - GSLB configuration (if deployed)
 
+### Remove Solution 5 (SAML SP Internal)
+
+To remove Solution 5 deployment:
+
+```bash
+ansible-playbook delete_apm_saml_sp_internal.yml
+```
+
+**Interactive confirmation required** - you must type `DELETE` to proceed.
+
+**Deletes:**
+- Access profile and access policy
+- All policy items and agents (SAML auth, endings)
+- All customization groups
+- SAML Service Provider configuration
+- SAML IDP Connector (to internal IDP)
+- AS3 application partition (if deployed)
+- GSLB configuration (if deployed)
+
+**Note:** This does NOT delete Solution 4 (IDP) - delete that separately if needed.
+
 ### Automated Cleanup (No Confirmation)
 
 For CI/CD pipelines or automated teardown:
 
 ```bash
-ansible-playbook cleanup_apm_vpn.yml         # Solution 1
-ansible-playbook cleanup_apm_portal.yml      # Solution 2
-ansible-playbook cleanup_apm_saml.yml        # Solution 3
-ansible-playbook cleanup_apm_saml_idp.yml    # Solution 4
+ansible-playbook cleanup_apm_vpn.yml              # Solution 1
+ansible-playbook cleanup_apm_portal.yml           # Solution 2
+ansible-playbook cleanup_apm_saml.yml             # Solution 3
+ansible-playbook cleanup_apm_saml_idp.yml         # Solution 4
+ansible-playbook cleanup_apm_saml_sp_internal.yml # Solution 5
 ```
 
 **WARNING:** These skip safety prompts. Use only in automation.
@@ -1098,7 +1280,15 @@ tail -f /var/log/restjavad.0.log
 - ✅ GSLB Configuration (16 API calls - optional)
 - **Subtotal: 55+ API calls**
 
-**Grand Total: 220+ API calls automated across all solutions**
+#### Solution 5: SAML SP with Internal IDP
+- ✅ SAML IDP Connector (pointing to internal IDP - 1 API call)
+- ✅ SAML Service Provider Configuration (1 API call)
+- ✅ Access Policy with SAML Auth (20+ API calls with transaction)
+- ✅ AS3 Application Deployment (4 API calls)
+- ✅ GSLB Configuration (16 API calls - optional)
+- **Subtotal: 42+ API calls**
+
+**Grand Total: 260+ API calls automated across all solutions**
 
 ### Not Included (from original collections)
 
@@ -1221,6 +1411,16 @@ For issues or questions:
 This playbook is provided as-is for automation purposes. Test thoroughly before production use.
 
 ## Changelog
+
+### Version 2.1.0
+- **Solution 5: SAML SP with Internal IDP** - SAML Service Provider using BIG-IP IDP
+  - SAML IDP connector pointing to internal BIG-IP IDP (Solution 4)
+  - SAML Service Provider configuration
+  - SAML authentication access policy
+  - Internal federation flow: SP → Internal IDP → AD → SAML Assertion
+  - Full deployment, cleanup, and interactive delete playbooks
+- Updated API call counts: 260+ API calls across all solutions
+- Documentation updates with Solution 5 architecture diagrams
 
 ### Version 2.0.0
 - **Solution 4: SAML Identity Provider** - BIG-IP as SAML IDP with AD backend
