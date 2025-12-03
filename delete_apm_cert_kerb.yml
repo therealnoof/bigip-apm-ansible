@@ -1,0 +1,292 @@
+---
+# Solution 6: Delete Certificate-based Authentication with Kerberos SSO
+# This playbook removes all Solution 6 configuration from BIG-IP
+
+- name: Delete APM Solution 6 - Certificate Authentication with Kerberos SSO
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution6.yml
+
+  tasks:
+    - name: Display deletion information
+      debug:
+        msg:
+          - "Deleting Solution 6: Certificate-based Authentication with Kerberos SSO"
+          - "Virtual Server Name: {{ vs1_name }}"
+          - "Partition: {{ partition_name }}"
+          - "BIG-IP: {{ bigip_mgmt }}"
+          - "WARNING: This will remove all Solution 6 configuration!"
+
+    # Step 1: Delete AS3 Application (if deployed via AS3)
+    - name: Delete AS3 application
+      when: deploy_application_via_as3 | default(true) | bool
+      block:
+        - name: Remove AS3 tenant
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            status_code: [200, 201, 404]
+            validate_certs: no
+            timeout: 120
+          register: as3_delete_result
+
+        - name: Display AS3 deletion result
+          debug:
+            msg: "AS3 tenant {{ partition_name }} deleted: {{ as3_delete_result.status }}"
+      tags:
+        - application
+        - as3
+
+    # Step 2: Delete Access Profile
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ access_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      register: access_profile_delete_result
+      tags:
+        - policy
+        - access-profile
+
+    # Step 3: Delete Access Policy
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ access_policy.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      register: access_policy_delete_result
+      tags:
+        - policy
+        - access-policy
+
+    # Step 4: Delete Policy Items
+    - name: Delete policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - "{{ policy_items.entry.name }}"
+        - "{{ policy_items.client_cert_auth.name }}"
+        - "{{ policy_items.ocsp_auth.name }}"
+        - "{{ policy_items.upn_extract.name }}"
+        - "{{ policy_items.ldap_query.name }}"
+        - "{{ policy_items.set_variables.name }}"
+        - "{{ policy_items.deny_ending.name }}"
+        - "{{ policy_items.allow_ending.name }}"
+      tags:
+        - policy
+        - policy-items
+
+    # Step 5: Delete Policy Agents
+    - name: Delete variable assign agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - "{{ policy_agents.set_variables.name }}"
+        - "{{ policy_agents.upn_extract.name }}"
+      tags:
+        - policy
+        - agents
+
+    - name: Delete LDAP query agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-ldap/~Common~{{ policy_agents.ldap_query.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - agents
+
+    - name: Delete client cert auth agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-client-cert/~Common~{{ policy_agents.client_cert_auth.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - agents
+
+    - name: Delete OCSP auth agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-ocsp/~Common~{{ policy_agents.ocsp_auth.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - agents
+
+    - name: Delete ending agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/{{ item.type }}/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - name: "{{ policy_agents.deny_ending.name }}"
+          type: "ending-deny"
+        - name: "{{ policy_agents.allow_ending.name }}"
+          type: "ending-allow"
+      tags:
+        - policy
+        - agents
+
+    # Step 6: Delete Customization Groups (reverse order)
+    - name: Delete customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop: "{{ customization_groups | reverse }}"
+      tags:
+        - policy
+        - customization
+
+    # Step 7: Delete LDAP AAA Server
+    - name: Delete LDAP AAA server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/ldap/~Common~{{ ldap_aaa_server.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - ldap
+        - aaa
+
+    # Step 8: Delete LDAP Pool
+    - name: Delete LDAP pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ ldap_pool.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - ldap
+        - ltm
+
+    # Step 9: Delete LDAP Node (optional - may be used by other configs)
+    - name: Delete LDAP node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ ldap_server_ip }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404, 400]  # 400 if still in use
+        validate_certs: no
+        timeout: 60
+      register: ldap_node_delete_result
+      ignore_errors: yes
+      tags:
+        - ldap
+        - ltm
+
+    # Step 10: Delete OCSP Servers
+    - name: Delete OCSP servers configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/ocsp/~Common~{{ ocsp_servers.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - ocsp
+
+    # Step 11: Delete Kerberos SSO Profile
+    - name: Delete Kerberos SSO profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/kerberos/~Common~{{ kerberos_sso.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - kerberos
+        - sso
+
+    # Step 12: Delete CA Certificate (optional - may be used by other configs)
+    - name: Delete CA certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ ca_certificate.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404, 400]  # 400 if still in use
+        validate_certs: no
+        timeout: 60
+      register: ca_cert_delete_result
+      ignore_errors: yes
+      tags:
+        - certificates
+
+    # Final summary
+    - name: Deletion complete
+      debug:
+        msg:
+          - "======================================================"
+          - "Solution 6 deletion complete!"
+          - "======================================================"
+          - "All Solution 6 components have been removed from BIG-IP"
+          - ""
+          - "Components deleted:"
+          - "  - AS3 application tenant: {{ partition_name }}"
+          - "  - Access profile: /Common/{{ access_profile.name }}"
+          - "  - Access policy: /Common/{{ access_policy.name }}"
+          - "  - Kerberos SSO: /Common/{{ kerberos_sso.name }}"
+          - "  - OCSP servers: /Common/{{ ocsp_servers.name }}"
+          - "  - LDAP AAA server: /Common/{{ ldap_aaa_server.name }}"
+          - ""
+          - "Note: CA certificate and LDAP node may still exist if"
+          - "they are being used by other configurations."
+          - "======================================================"

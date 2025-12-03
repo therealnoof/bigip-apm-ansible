@@ -1,0 +1,32 @@
+---
+# Create Kerberos SSO Profile
+# This task file creates a Kerberos SSO profile for backend application authentication
+
+- name: Create Kerberos SSO profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/kerberos/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ kerberos_sso.name }}"
+      partition: "Common"
+      accountName: "{{ kerberos_sso.account_name }}"
+      accountPassword: "{{ kerberos_sso.account_password }}"
+      locationSpecific: "{{ kerberos_sso.location_specific }}"
+      realm: "{{ kerberos_sso.realm }}"
+      sendAuthorization: "{{ kerberos_sso.send_authorization }}"
+      spnPattern: "{{ kerberos_sso.spn_pattern }}"
+      ticketLifetime: "{{ kerberos_sso.ticket_lifetime }}"
+      upnSupport: "{{ kerberos_sso.upn_support }}"
+      userRealmSource: "{{ kerberos_sso.user_realm_source }}"
+      usernameSource: "{{ kerberos_sso.username_source }}"
+    status_code: [200, 201, 409]
+    validate_certs: no
+    timeout: 60
+  register: kerberos_sso_result
+
+- name: Display Kerberos SSO profile creation result
+  debug:
+    msg: "Kerberos SSO profile {{ kerberos_sso.name }} created: {{ kerberos_sso_result.status }}"

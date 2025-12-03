@@ -1,0 +1,45 @@
+---
+# Import CA Certificate
+# This task file imports a CA certificate to BIG-IP for client certificate validation
+
+- name: Prepare CA certificate content
+  set_fact:
+    ca_cert_content_raw: "{{ ca_certificate.content }}"
+    ca_cert_length: "{{ ca_certificate.content | length }}"
+
+- name: Upload CA certificate file to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ ca_certificate.name }}.crt"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body: "{{ ca_cert_content_raw }}"
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Range: "0-{{ ca_cert_length | int - 1 }}/{{ ca_cert_length }}"
+      Content-Length: "{{ ca_cert_length }}"
+      Connection: "Keep-alive"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: upload_ca_cert_result
+
+- name: Install CA certificate on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      command: "install"
+      name: "{{ ca_certificate.name }}"
+      from-local-file: "/var/config/rest/downloads/{{ ca_certificate.name }}.crt"
+    status_code: [200, 201, 400, 409]  # 400/409 may indicate already exists
+    validate_certs: no
+    timeout: 60
+  register: install_ca_cert_result
+
+- name: Display CA certificate installation result
+  debug:
+    msg: "CA certificate {{ ca_certificate.name }} installed: {{ install_ca_cert_result.status }}"

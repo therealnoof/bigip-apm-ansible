@@ -1,0 +1,41 @@
+---
+# Create OCSP Servers Configuration
+# This task file creates OCSP responder configuration for certificate validation
+
+- name: Create OCSP servers configuration
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/ocsp"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ ocsp_servers.name }}"
+      partition: "Common"
+      allowCerts: "{{ ocsp_servers.allow_certs }}"
+      caFile: "{{ ocsp_servers.ca_file }}"
+      caPath: "{{ ocsp_servers.ca_path }}"
+      certIdDigest: "{{ ocsp_servers.cert_id_digest }}"
+      chain: "{{ ocsp_servers.chain }}"
+      checkCerts: "{{ ocsp_servers.check_certs }}"
+      explicitOcsp: "{{ ocsp_servers.explicit_ocsp }}"
+      ignoreAia: "{{ ocsp_servers.ignore_aia }}"
+      intern: "{{ ocsp_servers.intern }}"
+      locationSpecific: "{{ ocsp_servers.location_specific }}"
+      nonce: "{{ ocsp_servers.nonce }}"
+      signDigest: "{{ ocsp_servers.sign_digest }}"
+      statusAge: "{{ ocsp_servers.status_age }}"
+      trustOther: "{{ ocsp_servers.trust_other }}"
+      url: "{{ ocsp_servers.url }}"
+      validityPeriod: "{{ ocsp_servers.validity_period }}"
+      verify: "{{ ocsp_servers.verify }}"
+      verifyCert: "{{ ocsp_servers.verify_cert }}"
+      verifySig: "{{ ocsp_servers.verify_sig }}"
+    status_code: [200, 201, 409]
+    validate_certs: no
+    timeout: 60
+  register: ocsp_servers_result
+
+- name: Display OCSP servers creation result
+  debug:
+    msg: "OCSP servers {{ ocsp_servers.name }} created: {{ ocsp_servers_result.status }}"

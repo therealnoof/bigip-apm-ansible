@@ -66,6 +66,20 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution5-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution5/postman/solution5-create.postman_collection.json)
 
+### Solution 6: Certificate-based Authentication with Kerberos SSO
+- **Client Certificate Authentication** - On-demand X.509 certificate authentication
+- **OCSP Validation** - Real-time certificate revocation checking
+- **UPN Extraction** - Extract User Principal Name from certificate X.509 extensions
+- **LDAP Query** - Query Active Directory for user attributes using UPN
+- **Kerberos SSO** - Backend single sign-on to Windows Integrated Auth applications
+- **Access Policy** - Per-session policy with certificate validation flow
+- **Application Deployment** - AS3-based HTTPS virtual server with client SSL authentication
+- **GSLB** - Optional multi-datacenter DNS configuration
+
+**Use Case:** High-security environments requiring strong authentication (certificate + LDAP validation) with seamless SSO to backend applications. Ideal for government, financial services, or enterprises with PKI infrastructure where users have X.509 certificates with UPN extensions.
+
+**Source:** [solution6-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution6/postman/solution6-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -436,6 +450,107 @@ User → sp.acme.com (Solution 5 SP) → Redirect → idp.acme.com (Solution 4 I
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Solution 6: Certificate Authentication with Kerberos SSO Flow
+
+```
+User → https://solution6.acme.com (Client Cert Required)
+   │
+   ├─ 1. TLS Handshake: Client presents X.509 certificate
+   ├─ 2. BIG-IP requests certificate (on-demand)
+   ├─ 3. OCSP validation against dc1.f5lab.local
+   ├─ 4. UPN extraction from certificate (using TCL)
+   ├─ 5. LDAP query to get sAMAccountName
+   ├─ 6. Set session variables (username, domain)
+   │
+   └─► 7. Kerberos SSO to backend → Backend IIS/App Server
+```
+
+**Authentication Flow:**
+1. User accesses `https://solution6.acme.com`
+2. BIG-IP requests client certificate (on-demand, not required at TLS layer)
+3. On-Demand Client Cert Auth agent validates certificate basic properties
+4. OCSP Auth agent validates certificate against revocation list
+5. Variable Assign agent extracts UPN from X.509 extension (e.g., user1@f5lab.local)
+6. LDAP Query agent searches AD for user by UPN, retrieves sAMAccountName
+7. Variable Assign agent sets session.logon.last.username and .domain
+8. Kerberos SSO profile requests ticket for backend SPN
+9. Backend application receives Kerberos ticket (seamless SSO)
+
+### Components Architecture (Solution 6)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ User with X.509 Certificate (UPN: user1@f5lab.local)   │
+└───────────────────┬─────────────────────────────────────┘
+                    │ HTTPS (443) + Client Certificate
+                    ▼
+┌─────────────────────────────────────────────────────────┐
+│ F5 BIG-IP - APM Certificate Authentication + Kerb SSO  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Virtual Server (HTTPS)                            │  │
+│  │ - Client SSL Profile (Request Client Cert)       │  │
+│  │   * authenticationInviteCA: ca.f5lab.local       │  │
+│  │   * authenticationTrustCA: ca.f5lab.local        │  │
+│  │ - Access Profile: solution6-psp                  │  │
+│  └──────────────────────────────────────────────────┘  │
+│                         │                                │
+│  ┌──────────────────────┼───────────────────────────┐  │
+│  │ Per-Session Policy   ▼                            │  │
+│  │                                                    │  │
+│  │  Start → On-Demand Cert → OCSP → UPN Extract →  │  │
+│  │          │                  │       │             │  │
+│  │          ▼ (Invalid)        ▼ (Bad) ▼             │  │
+│  │        Deny              Deny   LDAP Query →     │  │
+│  │                                  │                 │  │
+│  │                                  ▼ (Pass)          │  │
+│  │                          Set Variables → Allow    │  │
+│  │                                  │                 │  │
+│  │                                  ▼ (Fail)          │  │
+│  │                                Deny                │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Kerberos SSO Profile: solution6-kerbsso          │  │
+│  │ - Account: HOST/solution6.f5lab.local            │  │
+│  │ - Realm: F5LAB.LOCAL                             │  │
+│  │ - SPN Pattern: HTTP/solution6.acme.com           │  │
+│  │ - Username Source: session.logon.last.username   │  │
+│  │ - User Realm Source: session.logon.last.domain   │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ OCSP Servers: solution6-ocsp-servers             │  │
+│  │ - CA: /Common/ca.f5lab.local                     │  │
+│  │ - URL: http://dc1.f5lab.local/ocsp               │  │
+│  │ - Validation: Certificate + Signature + Chain    │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ LDAP Query: solution6-ldap-servers               │  │
+│  │ - Type: Query (not authentication)               │  │
+│  │ - Filter: (userPrincipalName=user1@f5lab.local)  │  │
+│  │ - Attributes: sAMAccountName                      │  │
+│  │ - Search DN: dc=f5lab,dc=local                   │  │
+│  └──────────────────────────────────────────────────┘  │
+└───────────────────┬─────────────┬───────────────────────┘
+                    │ LDAP (389)  │ HTTP (OCSP)
+                    ▼             ▼
+┌──────────────────────────────────────────────────────┐
+│ Active Directory / PKI Infrastructure                │
+│ - dc1.f5lab.local (10.1.20.7)                       │
+│ - CA: ca.f5lab.local                                 │
+│ - OCSP Responder                                     │
+└──────────────────────────────────────────────────────┘
+                    │
+                    ▼ Kerberos Ticket Request
+┌──────────────────────────────────────────────────────┐
+│ Backend Application Server (IIS)                     │
+│ - Receives Kerberos ticket                           │
+│ - Seamless SSO (no additional auth prompt)          │
+└──────────────────────────────────────────────────────┘
+```
+
 ## Project Structure
 
 ```
@@ -449,11 +564,13 @@ bigip-apm-ansible/
 ├── deploy_apm_saml.yml               # Solution 3: SAML SP deployment playbook
 ├── deploy_apm_saml_idp.yml           # Solution 4: SAML IDP deployment playbook
 ├── deploy_apm_saml_sp_internal.yml   # Solution 5: SAML SP with internal IDP
+├── deploy_apm_cert_kerb.yml          # Solution 6: Certificate + Kerberos SSO
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
 ├── delete_apm_saml_idp.yml           # Solution 4: Interactive deletion playbook
 ├── delete_apm_saml_sp_internal.yml   # Solution 5: Interactive deletion playbook
+├── delete_apm_cert_kerb.yml          # Solution 6: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
@@ -464,7 +581,8 @@ bigip-apm-ansible/
 │   ├── solution2.yml                 # Solution 2 variables
 │   ├── solution3.yml                 # Solution 3 variables (SAML SP)
 │   ├── solution4.yml                 # Solution 4 variables (SAML IDP)
-│   └── solution5.yml                 # Solution 5 variables (SAML SP internal)
+│   ├── solution5.yml                 # Solution 5 variables (SAML SP internal)
+│   └── solution6.yml                 # Solution 6 variables (Certificate + Kerberos)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -482,7 +600,12 @@ bigip-apm-ansible/
 │   ├── access_policy_solution3.yml    # Solution 3 policy with SAML auth
 │   ├── access_policy_solution4.yml    # Solution 4 policy with AD + SAML IDP
 │   ├── access_policy_solution5.yml    # Solution 5 policy with SAML auth
+│   ├── access_policy_solution6.yml    # Solution 6 policy with cert auth
 │   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
+│   ├── import_ca_certificate.yml      # CA certificate import (Solution 6)
+│   ├── kerberos_sso.yml               # Kerberos SSO profile (Solution 6)
+│   ├── ocsp_servers.yml               # OCSP validation (Solution 6)
+│   ├── ldap_aaa_server.yml            # LDAP AAA server for queries (Solution 6)
 │   ├── as3_deployment.yml            # Application deployment
 │   └── gslb_configuration.yml        # DNS/GSLB setup
 ├── templates/
@@ -786,6 +909,70 @@ as3_config:
 4. SAML assertion returned to SP
 5. Access granted to backend application
 
+### Solution 6: Certificate Authentication with Kerberos SSO Deployment
+
+**Deploy Certificate + Kerberos SSO Solution:**
+```bash
+ansible-playbook deploy_apm_cert_kerb.yml
+```
+
+**Prerequisites:**
+- PKI infrastructure with CA certificate
+- OCSP responder accessible from BIG-IP
+- User certificates with UPN (User Principal Name) in X.509 extensions
+- Active Directory with LDAP enabled
+- Kerberos realm configured
+- Service Principal Name (SPN) registered for delegation account
+
+**What Gets Deployed:**
+- CA certificate for client cert validation
+- Kerberos SSO profile for backend authentication
+- OCSP servers configuration for revocation checking
+- LDAP pool and AAA server for user queries
+- Access policy with certificate authentication flow:
+  - On-demand client cert authentication
+  - OCSP validation
+  - UPN extraction from certificate
+  - LDAP query for user attributes
+  - Variable assignment for Kerberos SSO
+- AS3 application with client SSL profile
+- Optional GSLB configuration
+
+**Configuration Variables** (vars/solution6.yml):
+- `vs1_name`: "solution6"
+- `dns1_name`: "solution6.acme.com"
+- `partition_name`: "solution6"
+- `ca_certificate`: CA cert content
+- `kerberos_sso`: Kerberos SSO settings
+- `ocsp_servers`: OCSP responder configuration
+- `ldap_server_ip`: "10.1.20.7"
+- `as3_config`: Application deployment settings
+
+**Deploy Specific Components (Tags):**
+```bash
+# Deploy only certificates and OCSP
+ansible-playbook deploy_apm_cert_kerb.yml --tags certificates,ocsp
+
+# Deploy only Kerberos SSO
+ansible-playbook deploy_apm_cert_kerb.yml --tags kerberos,sso
+
+# Deploy only access policy
+ansible-playbook deploy_apm_cert_kerb.yml --tags policy
+
+# Deploy only application (AS3)
+ansible-playbook deploy_apm_cert_kerb.yml --tags application
+```
+
+**Authentication Flow:**
+1. User accesses `https://solution6.acme.com`
+2. BIG-IP requests client certificate (on-demand)
+3. Certificate validated against OCSP responder
+4. UPN extracted from certificate (e.g., user1@f5lab.local)
+5. LDAP query to retrieve sAMAccountName
+6. Session variables set for Kerberos SSO
+7. Kerberos ticket requested for backend SPN
+8. Access granted with seamless SSO to backend
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -905,6 +1092,28 @@ ansible-playbook delete_apm_saml_sp_internal.yml
 - GSLB configuration (if deployed)
 
 **Note:** This does NOT delete Solution 4 (IDP) - delete that separately if needed.
+
+### Remove Solution 6 (Certificate + Kerberos SSO)
+
+To remove Solution 6 deployment:
+
+```bash
+ansible-playbook delete_apm_cert_kerb.yml
+```
+
+**Deletes:**
+- Access profile and access policy
+- All policy items and agents (cert auth, OCSP, LDAP query, variable assign, endings)
+- All customization groups
+- Kerberos SSO profile
+- OCSP servers configuration
+- LDAP AAA server and pool
+- LDAP node (if not used by other configurations)
+- CA certificate (if not used by other configurations)
+- AS3 application partition (if deployed)
+- GSLB configuration (if deployed)
+
+**Note:** CA certificate and LDAP node are only deleted if not in use by other configurations.
 
 ### Automated Cleanup (No Confirmation)
 

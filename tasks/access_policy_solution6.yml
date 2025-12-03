@@ -1,0 +1,547 @@
+---
+# Create Access Policy for Solution 6 - Certificate-based Authentication with Kerberos SSO
+# This creates a per-session policy with client cert auth, OCSP validation, UPN extraction, LDAP query, and Kerberos SSO
+
+- name: Create transaction for policy configuration
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body: {}
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: transaction_result
+
+- name: Set transaction ID
+  set_fact:
+    trans_id: "{{ transaction_result.json.transId }}"
+
+- name: Display transaction ID
+  debug:
+    msg: "Transaction ID: {{ trans_id }}"
+
+- name: Debug - Display all policy item names that will be created
+  debug:
+    msg:
+      - "=== POLICY ITEMS THAT WILL BE CREATED ==="
+      - "Entry item: {{ policy_items.entry.name }}"
+      - "  -> next: {{ policy_items.entry.next_item }}"
+      - "Client cert auth item: {{ policy_items.client_cert_auth.name }}"
+      - "  -> rules next items: Successful={{ policy_items.client_cert_auth.rules[0].next_item }}, fallback={{ policy_items.client_cert_auth.rules[1].next_item }}"
+      - "OCSP auth item: {{ policy_items.ocsp_auth.name }}"
+      - "  -> rules next items: Successful={{ policy_items.ocsp_auth.rules[0].next_item }}, fallback={{ policy_items.ocsp_auth.rules[1].next_item }}"
+      - "UPN extract item: {{ policy_items.upn_extract.name }}"
+      - "  -> next: {{ policy_items.upn_extract.next_item }}"
+      - "LDAP query item: {{ policy_items.ldap_query.name }}"
+      - "  -> rules next items: Query Passed={{ policy_items.ldap_query.rules[0].next_item }}, fallback={{ policy_items.ldap_query.rules[1].next_item }}"
+      - "Set variables item: {{ policy_items.set_variables.name }}"
+      - "  -> next: {{ policy_items.set_variables.next_item }}"
+      - "Allow ending item: {{ policy_items.allow_ending.name }}"
+      - "Deny ending item: {{ policy_items.deny_ending.name }}"
+      - ""
+      - "=== ACCESS POLICY CONFIGURATION ==="
+      - "Policy name: {{ access_policy.name }}"
+      - "Default ending: {{ access_policy.default_ending }}"
+      - "Start item: {{ access_policy.start_item }}"
+
+# Customization Groups (Order matters! Deny ending MUST be first)
+- name: Create customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  loop: "{{ customization_groups }}"
+  register: customization_groups_result
+
+# Policy Agents
+
+- name: Create allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.allow_ending.name }}"
+      partition: "Common"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: allow_ending_result
+  failed_when: allow_ending_result.status not in [200, 201]
+
+- name: Create deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.deny_ending.name }}"
+      partition: "Common"
+      customizationGroup: "{{ policy_agents.deny_ending.customization_group }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: deny_ending_result
+
+- name: Create OCSP authentication agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-ocsp/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.ocsp_auth.name }}"
+      partition: "Common"
+      certificateType: "{{ policy_agents.ocsp_auth.certificate_type }}"
+      ocspResponder: "{{ policy_agents.ocsp_auth.ocsp_responder }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: ocsp_auth_result
+
+- name: Create on-demand client cert auth agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-client-cert/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.client_cert_auth.name }}"
+      partition: "Common"
+      mode: "{{ policy_agents.client_cert_auth.mode }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: client_cert_auth_result
+
+- name: Create LDAP query agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-ldap/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.ldap_query.name }}"
+      partition: "Common"
+      attrName: "{{ policy_agents.ldap_query.attr_name }}"
+      filter: "{{ policy_agents.ldap_query.filter }}"
+      groupMemberScope: "{{ policy_agents.ldap_query.group_member_scope }}"
+      groupMembershipScope: "{{ policy_agents.ldap_query.group_membership_scope }}"
+      maxLogonAttempt: "{{ policy_agents.ldap_query.max_logon_attempt }}"
+      maxPwdResetAttempt: "{{ policy_agents.ldap_query.max_pwd_reset_attempt }}"
+      pwdComplexityCheck: "{{ policy_agents.ldap_query.pwd_complexity_check }}"
+      searchDn: "{{ policy_agents.ldap_query.search_dn }}"
+      server: "{{ policy_agents.ldap_query.server }}"
+      showExtendedError: "{{ policy_agents.ldap_query.show_extended_error }}"
+      type: "{{ policy_agents.ldap_query.type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: ldap_query_result
+
+- name: Create UPN extract variable assign agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.upn_extract.name }}"
+      partition: "Common"
+      type: "{{ policy_agents.upn_extract.type }}"
+      variables: "{{ policy_agents.upn_extract.variables }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: upn_extract_result
+
+- name: Create set variables agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_agents.set_variables.name }}"
+      partition: "Common"
+      type: "{{ policy_agents.set_variables.type }}"
+      variables: "{{ policy_agents.set_variables.variables }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: set_variables_result
+
+# Policy Items
+
+- name: Create allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.allow_ending.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.allow_ending.caption }}"
+      color: "{{ policy_items.allow_ending.color }}"
+      itemType: "{{ policy_items.allow_ending.item_type }}"
+      agents:
+        - name: "{{ policy_agents.allow_ending.name }}"
+          partition: "Common"
+          type: "{{ policy_items.allow_ending.agent_type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: allow_ending_item_result
+
+- name: Create deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.deny_ending.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.deny_ending.caption }}"
+      color: "{{ policy_items.deny_ending.color }}"
+      itemType: "{{ policy_items.deny_ending.item_type }}"
+      agents:
+        - name: "{{ policy_agents.deny_ending.name }}"
+          partition: "Common"
+          type: "{{ policy_items.deny_ending.agent_type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: deny_ending_item_result
+
+- name: Create set variables policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.set_variables.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.set_variables.caption }}"
+      color: "{{ policy_items.set_variables.color }}"
+      itemType: "{{ policy_items.set_variables.item_type }}"
+      loop: "{{ policy_items.set_variables.loop }}"
+      agents:
+        - name: "{{ policy_agents.set_variables.name }}"
+          partition: "Common"
+          type: "{{ policy_items.set_variables.agent_type }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ policy_items.set_variables.next_item }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: set_variables_item_result
+
+- name: Create LDAP query policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.ldap_query.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.ldap_query.caption }}"
+      color: "{{ policy_items.ldap_query.color }}"
+      itemType: "{{ policy_items.ldap_query.item_type }}"
+      loop: "{{ policy_items.ldap_query.loop }}"
+      agents:
+        - name: "{{ policy_agents.ldap_query.name }}"
+          partition: "Common"
+          type: "{{ policy_items.ldap_query.agent_type }}"
+      rules: "{{ policy_items.ldap_query.rules }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: ldap_query_item_result
+
+- name: Create UPN extract policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.upn_extract.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.upn_extract.caption }}"
+      color: "{{ policy_items.upn_extract.color }}"
+      itemType: "{{ policy_items.upn_extract.item_type }}"
+      loop: "{{ policy_items.upn_extract.loop }}"
+      agents:
+        - name: "{{ policy_agents.upn_extract.name }}"
+          partition: "Common"
+          type: "{{ policy_items.upn_extract.agent_type }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ policy_items.upn_extract.next_item }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: upn_extract_item_result
+
+- name: Create OCSP auth policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.ocsp_auth.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.ocsp_auth.caption }}"
+      color: "{{ policy_items.ocsp_auth.color }}"
+      itemType: "{{ policy_items.ocsp_auth.item_type }}"
+      loop: "{{ policy_items.ocsp_auth.loop }}"
+      agents:
+        - name: "{{ policy_agents.ocsp_auth.name }}"
+          partition: "Common"
+          type: "{{ policy_items.ocsp_auth.agent_type }}"
+      rules: "{{ policy_items.ocsp_auth.rules }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: ocsp_auth_item_result
+
+- name: Create on-demand client cert auth policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.client_cert_auth.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.client_cert_auth.caption }}"
+      color: "{{ policy_items.client_cert_auth.color }}"
+      itemType: "{{ policy_items.client_cert_auth.item_type }}"
+      loop: "{{ policy_items.client_cert_auth.loop }}"
+      agents:
+        - name: "{{ policy_agents.client_cert_auth.name }}"
+          partition: "Common"
+          type: "{{ policy_items.client_cert_auth.agent_type }}"
+      rules: "{{ policy_items.client_cert_auth.rules }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: client_cert_auth_item_result
+
+- name: Create entry point policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ policy_items.entry.name }}"
+      partition: "Common"
+      caption: "{{ policy_items.entry.caption }}"
+      color: "{{ policy_items.entry.color }}"
+      itemType: "{{ policy_items.entry.item_type }}"
+      loop: "{{ policy_items.entry.loop }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ policy_items.entry.next_item }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: entry_item_result
+
+# Create Access Policy
+
+- name: Debug - Show access policy structure before creation
+  debug:
+    msg:
+      - "Access Policy Name: {{ access_policy.name }}"
+      - "Default Ending: {{ access_policy.default_ending }}"
+      - "Start Item: {{ access_policy.start_item }}"
+      - "Items array:"
+      - "{{ access_policy.items }}"
+
+- name: Prepare access policy body
+  set_fact:
+    access_policy_body:
+      name: "{{ access_policy.name }}"
+      partition: "Common"
+      defaultEnding: "{{ access_policy.default_ending }}"
+      maxMacroLoopCount: "{{ access_policy.max_macro_loop_count }}"
+      oneshotMacro: "{{ access_policy.oneshot_macro }}"
+      startItem: "{{ access_policy.start_item }}"
+      type: "{{ access_policy.type }}"
+      items: "{{ access_policy.items }}"
+
+- name: Debug - Show complete JSON body that will be sent
+  debug:
+    msg: "{{ access_policy_body | to_nice_json }}"
+
+- name: Create access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body: "{{ access_policy_body }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: access_policy_result
+
+# Create Access Profile
+
+- name: Create access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ access_profile.name }}"
+      partition: "Common"
+      acceptLanguages: "{{ access_profile.accept_languages }}"
+      accessPolicy: "{{ access_profile.access_policy }}"
+      customizationGroup: "{{ access_profile.customization_group }}"
+      epsGroup: "{{ access_profile.eps_group }}"
+      errormapGroup: "{{ access_profile.errormap_group }}"
+      frameworkInstallationGroup: "{{ access_profile.framework_installation_group }}"
+      generalUiGroup: "{{ access_profile.general_ui_group }}"
+      ssoName: "{{ access_profile.sso_name }}"
+      accessPolicyTimeout: "{{ access_profile.access_policy_timeout }}"
+      defaultLanguage: "{{ access_profile.default_language }}"
+      httponlyCookie: "{{ access_profile.httponly_cookie }}"
+      inactivityTimeout: "{{ access_profile.inactivity_timeout }}"
+      logoutUriTimeout: "{{ access_profile.logout_uri_timeout }}"
+      maxConcurrentSessions: "{{ access_profile.max_concurrent_sessions }}"
+      maxConcurrentUsers: "{{ access_profile.max_concurrent_users }}"
+      maxFailureDelay: "{{ access_profile.max_failure_delay }}"
+      maxInProgressSessions: "{{ access_profile.max_in_progress_sessions }}"
+      maxSessionTimeout: "{{ access_profile.max_session_timeout }}"
+      minFailureDelay: "{{ access_profile.min_failure_delay }}"
+      modifiedSinceLastPolicySync: "{{ access_profile.modified_since_last_policy_sync }}"
+      persistentCookie: "{{ access_profile.persistent_cookie }}"
+      restrictToSingleClientIp: "{{ access_profile.restrict_to_single_client_ip }}"
+      scope: "{{ access_profile.scope }}"
+      secureCookie: "{{ access_profile.secure_cookie }}"
+      type: "{{ access_profile.type }}"
+      useHttp_503OnError: "{{ access_profile.use_http_503_on_error }}"
+      userIdentityMethod: "{{ access_profile.user_identity_method }}"
+      logSettings: "{{ access_profile.log_settings }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: access_profile_result
+
+# Commit Transaction
+
+- name: Commit transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: commit_result
+
+- name: Display transaction commit result
+  debug:
+    msg: "Transaction committed: {{ commit_result.status }}"
+
+# Apply Policy (increment generation)
+
+- name: Apply access policy (increment generation)
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ access_profile.name }}"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: apply_policy_result
+
+- name: Display policy apply result
+  debug:
+    msg: "Access policy applied: {{ apply_policy_result.status }}"

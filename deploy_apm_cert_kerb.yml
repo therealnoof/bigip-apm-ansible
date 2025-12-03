@@ -1,0 +1,155 @@
+---
+# Solution 6: Deploy Certificate-based Authentication with Kerberos SSO
+# This playbook deploys a complete APM solution with:
+# - Client certificate authentication with OCSP validation
+# - UPN extraction from X.509 certificates
+# - LDAP query for user attributes
+# - Kerberos SSO to backend applications
+# - AS3 application deployment with client SSL
+
+- name: Deploy APM Solution 6 - Certificate Authentication with Kerberos SSO
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution6.yml
+
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg:
+          - "Deploying Solution 6: Certificate-based Authentication with Kerberos SSO"
+          - "Virtual Server Name: {{ vs1_name }}"
+          - "DNS Name: {{ dns1_name }}"
+          - "Partition: {{ partition_name }}"
+          - "BIG-IP: {{ bigip_mgmt }}"
+
+    # Step 1: Import CA Certificate
+    - name: Import CA certificate for client cert validation
+      include_tasks: tasks/import_ca_certificate.yml
+      tags:
+        - certificates
+        - setup
+
+    # Step 2: Create Kerberos SSO Profile
+    - name: Create Kerberos SSO profile
+      include_tasks: tasks/kerberos_sso.yml
+      tags:
+        - kerberos
+        - sso
+        - setup
+
+    # Step 3: Create OCSP Servers Configuration
+    - name: Create OCSP servers for certificate validation
+      include_tasks: tasks/ocsp_servers.yml
+      tags:
+        - ocsp
+        - certificates
+        - setup
+
+    # Step 4: Create LDAP AAA Server
+    - name: Create LDAP AAA server for user attribute queries
+      include_tasks: tasks/ldap_aaa_server.yml
+      tags:
+        - ldap
+        - aaa
+        - setup
+
+    # Step 5: Create Access Policy with all components
+    - name: Create access policy with certificate authentication
+      include_tasks: tasks/access_policy_solution6.yml
+      tags:
+        - policy
+        - access-policy
+
+    # Step 6: Deploy Application via AS3 (if enabled)
+    - name: Deploy application using AS3
+      when: deploy_application_via_as3 | default(true) | bool
+      block:
+        - name: Create AS3 declaration for Solution 6
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            body_format: json
+            body:
+              class: "ADC"
+              action: "deploy"
+              persist: true
+              declaration:
+                class: "ADC"
+                schemaVersion: "3.14.0"
+                id: "APM"
+                "{{ partition_name }}":
+                  class: "Tenant"
+                  "{{ path_name }}":
+                    class: "Application"
+                    template: "generic"
+                    "{{ vs1_name }}":
+                      class: "Service_HTTPS"
+                      virtualAddresses:
+                        - "{{ as3_config.virtual_address }}"
+                      virtualPort: "{{ as3_config.virtual_port }}"
+                      serverTLS: "{{ vs1_name }}-clientssl"
+                      pool: "iis-pool"
+                      snat: "auto"
+                      profileAccess:
+                        bigip: "/Common/{{ partition_name }}-psp"
+                    "{{ vs1_name }}-clientssl":
+                      class: "TLS_Server"
+                      authenticationInviteCA:
+                        bigip: "{{ as3_config.client_ssl_profile.authentication_invite_ca }}"
+                      authenticationTrustCA:
+                        bigip: "{{ as3_config.client_ssl_profile.authentication_trust_ca }}"
+                      certificates:
+                        - certificate: "tlsserver_local_cert"
+                    "tlsserver_local_cert":
+                      class: "Certificate"
+                      certificate:
+                        bigip: "{{ as3_config.client_ssl_profile.certificate }}"
+                      privateKey:
+                        bigip: "{{ as3_config.client_ssl_profile.private_key }}"
+                    "iis-pool":
+                      class: "Pool"
+                      members: "{{ as3_config.pool_members | map('regex_replace', '^(.+):([0-9]+)$', '{\"serverAddresses\": [\"\\1\"], \"servicePort\": \\2}') | map('from_json') | list }}"
+                      monitors:
+                        - "icmp"
+            status_code: [200, 201]
+            validate_certs: no
+            timeout: 120
+          register: as3_result
+
+        - name: Display AS3 deployment result
+          debug:
+            msg: "AS3 application deployed: {{ as3_result.status }}"
+      tags:
+        - application
+        - as3
+
+    # Final summary
+    - name: Deployment complete
+      debug:
+        msg:
+          - "======================================================"
+          - "Solution 6 deployment complete!"
+          - "======================================================"
+          - "Virtual Server: https://{{ as3_config.virtual_address }}"
+          - "DNS Name: https://{{ dns1_name }}"
+          - "Access Profile: /Common/{{ partition_name }}-psp"
+          - "Kerberos SSO: /Common/{{ vs1_name }}-kerbsso"
+          - ""
+          - "Authentication Flow:"
+          - "  1. Client certificate authentication (request mode)"
+          - "  2. OCSP validation against {{ ocsp_servers.url }}"
+          - "  3. UPN extraction from X.509 certificate"
+          - "  4. LDAP query to {{ ldap_server_ip }} for user attributes"
+          - "  5. Kerberos SSO to backend {{ kerberos_sso.realm }}"
+          - ""
+          - "Next Steps:"
+          - "  - Ensure client certificates are issued by {{ ca_certificate.name }}"
+          - "  - Verify OCSP responder is accessible"
+          - "  - Test with a user that has a certificate with UPN"
+          - "  - Verify backend application accepts Kerberos tickets"
+          - "======================================================"

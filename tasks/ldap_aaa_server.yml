@@ -1,0 +1,64 @@
+---
+# Create LDAP AAA Server Configuration
+# This task file creates LDAP node, pool, and AAA server for LDAP queries
+
+- name: Create LDAP server node
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ ldap_server_ip }}"
+      address: "{{ ldap_server_ip }}"
+    status_code: [200, 201, 409]
+    validate_certs: no
+    timeout: 60
+  register: ldap_node_result
+
+- name: Create LDAP server pool
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ ldap_pool.name }}"
+      members: "{{ ldap_pool.members }}"
+    status_code: [200, 201, 409]
+    validate_certs: no
+    timeout: 60
+  register: ldap_pool_result
+
+- name: Create APM AAA LDAP server
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/ldap/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      name: "{{ ldap_aaa_server.name }}"
+      partition: "Common"
+      address: "{{ ldap_aaa_server.address }}"
+      adminDn: "{{ ldap_aaa_server.admin_dn }}"
+      adminEncryptedPassword: "{{ ldap_aaa_server.admin_password }}"
+      cleanupCache: "{{ ldap_aaa_server.cleanup_cache }}"
+      groupCacheTtl: "{{ ldap_aaa_server.group_cache_ttl }}"
+      isLdaps: "{{ ldap_aaa_server.is_ldaps }}"
+      locationSpecific: "{{ ldap_aaa_server.location_specific }}"
+      pool: "{{ ldap_aaa_server.pool }}"
+      port: "{{ ldap_aaa_server.port }}"
+      schemaAttr: "{{ ldap_aaa_server.schema_attr }}"
+      timeout: "{{ ldap_aaa_server.timeout }}"
+      usePool: "{{ ldap_aaa_server.use_pool }}"
+    status_code: [200, 201, 409]
+    validate_certs: no
+    timeout: 60
+  register: ldap_aaa_result
+
+- name: Display LDAP AAA server creation result
+  debug:
+    msg: "LDAP AAA server {{ ldap_aaa_server.name }} created: {{ ldap_aaa_result.status }}"
