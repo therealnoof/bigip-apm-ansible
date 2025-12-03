@@ -91,7 +91,33 @@
       partition: "{{ policy_agents.allow_ending.partition }}"
     status_code: [200, 201, 409]
 
-- name: Create OAuth scope agent
+# OAuth Scope Agent - different body depending on token validation mode
+# Internal mode (JWT): requires jwtProviderList
+# External mode (introspection): requires oauthProvider, no jwtProviderList
+- name: Create OAuth scope agent (external/introspection mode)
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-oauth"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ policy_agents.oauth_scope.name }}"
+      partition: "{{ policy_agents.oauth_scope.partition }}"
+      grantType: "{{ policy_agents.oauth_scope.grant_type }}"
+      oauthProvider: "{{ policy_agents.oauth_scope.oauth_provider }}"
+      openidConnect: "{{ policy_agents.oauth_scope.openid_connect }}"
+      openidFlowType: "{{ policy_agents.oauth_scope.openid_flow_type }}"
+      redirectionUri: "{{ policy_agents.oauth_scope.redirection_uri }}"
+      tokenValidationMode: "{{ policy_agents.oauth_scope.token_validation_mode }}"
+      type: "{{ policy_agents.oauth_scope.type }}"
+    status_code: [200, 201, 409]
+  when: token_validation_mode == "external"
+
+- name: Create OAuth scope agent (internal/JWT mode)
   uri:
     url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-oauth"
     method: POST
@@ -112,6 +138,7 @@
       tokenValidationMode: "{{ policy_agents.oauth_scope.token_validation_mode }}"
       type: "{{ policy_agents.oauth_scope.type }}"
     status_code: [200, 201, 409]
+  when: token_validation_mode == "internal"
 
 # =============================================================================
 # CREATE POLICY ITEMS

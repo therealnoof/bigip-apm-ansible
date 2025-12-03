@@ -2,17 +2,25 @@
 # Solution 9: OAuth Resource Server Deployment
 # Deploys BIG-IP APM as OAuth Resource Server (Client)
 #
-# PREREQUISITE: Solution 8 (OAuth Authorization Server) must be deployed first
+# PREREQUISITE: Solution 8 (OAuth Authorization Server) should be deployed first
 #
 # Usage:
+#   # Default: External/Introspection mode (doesn't require OIDC discovery)
 #   ansible-playbook deploy_apm_oauth_rs.yml
 #
+#   # Internal/JWT mode (requires OIDC discovery to succeed)
+#   ansible-playbook deploy_apm_oauth_rs.yml -e token_validation_mode=internal
+#
+# Token Validation Modes:
+# - external (default): Uses introspection to validate tokens against OAuth AS
+#   This mode works even if OIDC discovery fails.
+# - internal: Uses JWT validation with pre-shared key
+#   This mode requires the OAuth AS to be reachable for OIDC discovery.
+#
 # This playbook creates:
-# - CA Certificate (for trusting the Authorization Server)
 # - OAuth Provider (pointing to Authorization Server's OIDC endpoint)
 # - JWK Configuration (pre-shared key matching the Authorization Server)
-# - JWT Configuration (auto-discovered from provider)
-# - JWT Provider List
+# - JWT Provider List (only for internal mode, when OIDC discovery works)
 # - OAuth Client Application
 # - Access Policy with OAuth Scope validation
 # - Access Profile
@@ -41,60 +49,13 @@
           DNS Name: {{ dns1_name }}
           Virtual IP: {{ as3_config.virtual_address }}:{{ as3_config.virtual_port }}
           OAuth AS Reference: https://{{ oauth_as_dns }}
+          Token Validation Mode: {{ token_validation_mode }}
           ============================================================
       tags:
         - always
 
     # =========================================================================
-    # IMPORT CA CERTIFICATE
-    # =========================================================================
-
-    - name: Calculate certificate content length
-      set_fact:
-        cert_content_length: "{{ ca_cert.content | length }}"
-      tags:
-        - certificate
-
-    - name: Upload CA certificate file
-      uri:
-        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ ca_cert.name }}.crt"
-        method: POST
-        user: "{{ bigip_username }}"
-        password: "{{ bigip_password }}"
-        validate_certs: "{{ validate_certs }}"
-        headers:
-          Content-Type: "application/octet-stream"
-          Content-Range: "0-{{ (cert_content_length | int) - 1 }}/{{ cert_content_length }}"
-        body: "{{ ca_cert.content }}"
-        status_code: [200, 409]
-      tags:
-        - certificate
-
-    - name: Install CA certificate
-      uri:
-        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
-        method: POST
-        user: "{{ bigip_username }}"
-        password: "{{ bigip_password }}"
-        validate_certs: "{{ validate_certs }}"
-        body_format: json
-        body:
-          command: "install"
-          name: "{{ ca_cert.name }}"
-          from-local-file: "/var/config/rest/downloads/{{ ca_cert.name }}.crt"
-        status_code: [200, 400]
-      register: cert_install
-      tags:
-        - certificate
-
-    - name: Display CA certificate installation result
-      debug:
-        msg: "CA certificate {{ ca_cert.name }}: {{ 'installed' if cert_install.status == 200 else 'already exists' }}"
-      tags:
-        - certificate
-
-    # =========================================================================
-    # CREATE JWK CONFIGURATION (BEFORE PROVIDER)
+    # CREATE JWK CONFIGURATION
     # =========================================================================
 
     - name: Create JWK configuration
@@ -131,44 +92,13 @@
         - jwk
 
     # =========================================================================
-    # CREATE JWT CONFIGURATION (BEFORE PROVIDER)
+    # CREATE OAUTH PROVIDER
     # =========================================================================
+    # The OAuth provider connects to the Authorization Server's OIDC endpoint.
+    # For external mode, discovery isn't critical but improves functionality.
+    # For internal mode, discovery is required to establish JWT config linkage.
 
-    - name: Create JWT configuration
-      uri:
-        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwt-config"
-        method: POST
-        user: "{{ bigip_username }}"
-        password: "{{ bigip_password }}"
-        validate_certs: "{{ validate_certs }}"
-        body_format: json
-        body:
-          name: "{{ vs1_name }}-jwt-config"
-          partition: "Common"
-          allowedKeys:
-            - "/Common/{{ jwk_config.name }}"
-          allowedClockSkew: 60
-          issuer: "https://{{ oauth_as_dns }}"
-          allowedSigningAlgorithms:
-            - "HS256"
-        status_code: [200, 201, 409]
-      register: jwt_config_result
-      tags:
-        - oauth
-        - jwt
-
-    - name: Display JWT config creation result
-      debug:
-        msg: "JWT config {{ vs1_name }}-jwt-config: {{ 'created' if jwt_config_result.status in [200, 201] else 'already exists' }}"
-      tags:
-        - oauth
-        - jwt
-
-    # =========================================================================
-    # CREATE OAUTH PROVIDER (WITH MANUAL JWT CONFIG)
-    # =========================================================================
-
-    - name: Create OAuth provider with manual JWT config
+    - name: Create OAuth provider
       uri:
         url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider"
         method: POST
@@ -187,9 +117,9 @@
           maxResponseSize: "{{ oauth_provider.max_response_size }}"
           openidCfgUri: "{{ oauth_provider.openid_cfg_uri }}"
           saveJsonPayload: "{{ oauth_provider.save_json_payload }}"
+          trustedCaBundle: "/Common/ca-bundle.crt"
           type: "{{ oauth_provider.type }}"
-          useAutoJwtConfig: "false"
-          jwtConfig: "/Common/{{ vs1_name }}-jwt-config"
+          useAutoJwtConfig: "true"
         status_code: [200, 201, 409]
       register: oauth_provider_result
       tags:
@@ -203,25 +133,13 @@
         - oauth
         - provider
 
-    - name: Set JWT config name fact
-      set_fact:
-        jwt_config_name: "{{ vs1_name }}-jwt-config"
-      tags:
-        - oauth
-        - jwt
-
-    - name: Display JWT config name
-      debug:
-        msg: "Using JWT config: {{ jwt_config_name }}"
-      tags:
-        - oauth
-        - jwt
-
     # =========================================================================
-    # CREATE JWT PROVIDER LIST
+    # CREATE JWT PROVIDER LIST (Internal Mode Only)
     # =========================================================================
+    # JWT provider list requires OIDC discovery to succeed and create the
+    # auto_jwt_<provider> config with proper linkage. Skip for external mode.
 
-    - name: Create JWT provider list
+    - name: Create JWT provider list (internal mode only)
       uri:
         url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwt-provider-list"
         method: POST
@@ -236,16 +154,25 @@
           providers: "{{ jwt_provider_list.providers }}"
         status_code: [200, 201, 409]
       register: jwt_list_result
+      when: token_validation_mode == "internal"
       tags:
         - oauth
         - jwt
 
     - name: Display JWT provider list creation result
       debug:
-        msg: "JWT provider list {{ jwt_provider_list.name }}: {{ 'created' if jwt_list_result.status in [200, 201] else 'already exists' }}"
+        msg: "JWT provider list {{ jwt_provider_list.name }}: {{ 'created' if jwt_list_result.status in [200, 201] else 'already exists or skipped' }}"
+      when: token_validation_mode == "internal"
       tags:
         - oauth
         - jwt
+
+    - name: Display external mode info
+      debug:
+        msg: "Using external/introspection mode - JWT provider list not required"
+      when: token_validation_mode == "external"
+      tags:
+        - oauth
 
     # =========================================================================
     # CREATE OAUTH CLIENT APPLICATION
@@ -326,6 +253,50 @@
     # DEPLOY AS3 APPLICATION
     # =========================================================================
 
+    # Build AS3 declaration in multiple steps to handle dynamic keys
+    - name: Build AS3 application config
+      set_fact:
+        as3_app_config:
+          class: "Application"
+          template: "https"
+          serviceMain:
+            class: "Service_HTTPS"
+            virtualAddresses:
+              - "{{ as3_config.virtual_address }}"
+            virtualPort: 443
+            pool: "{{ vs1_name }}-pool"
+            profileAccess:
+              bigip: "/Common/{{ access_profile.name }}"
+            serverTLS:
+              bigip: "/Common/clientssl"
+            redirect80: false
+            snat: "{{ as3_config.snat }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add pool to AS3 app config
+      set_fact:
+        as3_app_config: "{{ as3_app_config | combine({vs1_name + '-pool': {'class': 'Pool', 'monitors': ['http'], 'members': [{'servicePort': as3_config.pool_members[0].port | int, 'serverAddresses': [as3_config.pool_members[0].address]}]}}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Build AS3 tenant config
+      set_fact:
+        as3_tenant_config:
+          class: "Tenant"
+      tags:
+        - application
+        - as3
+
+    - name: Add application to tenant
+      set_fact:
+        as3_tenant_config: "{{ as3_tenant_config | combine({path_name: as3_app_config}) }}"
+      tags:
+        - application
+        - as3
+
     - name: Build AS3 declaration
       set_fact:
         as3_declaration:
@@ -336,31 +307,13 @@
             class: "ADC"
             schemaVersion: "3.0.0"
             id: "{{ partition_name }}"
-            "{{ partition_name }}":
-              class: "Tenant"
-              "{{ path_name }}":
-                class: "Application"
-                template: "https"
-                serviceMain:
-                  class: "Service_HTTPS"
-                  virtualAddresses:
-                    - "{{ as3_config.virtual_address }}"
-                  virtualPort: "{{ as3_config.virtual_port }}"
-                  pool: "{{ vs1_name }}-pool"
-                  profileAccess:
-                    bigip: "/Common/{{ access_profile.name }}"
-                  serverTLS:
-                    bigip: "/Common/clientssl"
-                  redirect80: false
-                  snat: "{{ as3_config.snat }}"
-                "{{ vs1_name }}-pool":
-                  class: "Pool"
-                  monitors:
-                    - http
-                  members:
-                    - servicePort: "{{ as3_config.pool_members[0].port }}"
-                      serverAddresses:
-                        - "{{ as3_config.pool_members[0].address }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add tenant to declaration
+      set_fact:
+        as3_declaration: "{{ as3_declaration | combine({'declaration': as3_declaration.declaration | combine({partition_name: as3_tenant_config})}) }}"
       tags:
         - application
         - as3
@@ -400,10 +353,9 @@
           ============================================================
 
           Components Created:
-          - CA Certificate: {{ ca_cert.name }}
           - OAuth Provider: {{ oauth_provider.name }}
           - JWK: {{ jwk_config.name }}
-          - JWT Provider List: {{ jwt_provider_list.name }}
+          - JWT Provider List: {{ jwt_provider_list.name if token_validation_mode == 'internal' else 'N/A (external mode)' }}
           - OAuth Client App: {{ oauth_client_app.name }}
           - Access Profile: {{ access_profile.name }}
           - AS3 Tenant: {{ partition_name }}
@@ -416,11 +368,20 @@
           OAuth Configuration:
           - Authorization Server: https://{{ oauth_as_dns }}
           - OIDC Endpoint: {{ oauth_provider.openid_cfg_uri }}
+          - Token Validation: {{ token_validation_mode }}
 
           ============================================================
 
-          PREREQUISITE: Ensure Solution 8 (OAuth Authorization Server)
-          is deployed and accessible at https://{{ oauth_as_dns }}
+          {% if token_validation_mode == 'external' %}
+          NOTE: Using external/introspection mode. The OAuth AS must be
+          reachable at runtime for token introspection to work.
+
+          To use internal/JWT validation mode (requires OIDC discovery):
+            ansible-playbook deploy_apm_oauth_rs.yml -e token_validation_mode=internal
+          {% else %}
+          NOTE: Using internal/JWT validation mode. OIDC discovery must
+          have succeeded to create the auto_jwt config linkage.
+          {% endif %}
 
           ============================================================
       tags:

@@ -176,10 +176,10 @@
         - agents
 
     # =========================================================================
-    # DELETE CUSTOMIZATION GROUPS
+    # DELETE CUSTOMIZATION GROUPS (Access Policy related)
     # =========================================================================
 
-    - name: Delete customization groups
+    - name: Delete access policy customization groups
       uri:
         url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
         method: DELETE
@@ -194,7 +194,6 @@
         - "{{ vs1_name }}-psp_framework_installation"
         - "{{ vs1_name }}-psp_general_ui"
         - "{{ vs1_name }}-psp_end_deny_ag"
-        - "{{ vs1_name }}_oauth_authz_client_app_customization"
       loop_control:
         label: "{{ item }}"
       tags:
@@ -216,6 +215,23 @@
       tags:
         - oauth
         - client
+
+    # =========================================================================
+    # DELETE OAUTH CLIENT CUSTOMIZATION GROUP
+    # =========================================================================
+    # Must be deleted AFTER OAuth client app since it references it
+
+    - name: Delete OAuth client customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}_oauth_authz_client_app_customization"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - customization
 
     # =========================================================================
     # DELETE JWT PROVIDER LIST

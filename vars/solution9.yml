@@ -89,8 +89,11 @@ jwk_config:
   use_client_secret: "false"
 
 # =============================================================================
-# JWT PROVIDER LIST
+# JWT PROVIDER LIST (Optional - requires OIDC discovery to succeed)
 # =============================================================================
+# NOTE: The JWT provider list requires the OAuth Authorization Server (Solution 8)
+# to be reachable for OIDC discovery. When using external/introspection mode,
+# the JWT provider list is not required.
 
 jwt_provider_list:
   name: "{{ vs1_name }}-list"
@@ -98,6 +101,10 @@ jwt_provider_list:
   access_token_expires_in: 0
   providers:
     - "/Common/{{ vs1_name }}-provider"
+
+# Token validation mode: "internal" (JWT) or "external" (introspection)
+# Use "external" when OAuth AS is not reachable for OIDC discovery
+token_validation_mode: "external"
 
 # =============================================================================
 # OAUTH CLIENT APPLICATION
@@ -191,11 +198,15 @@ policy_agents:
     name: "{{ vs1_name }}-psp_act_oauth_scope_ag"
     partition: "Common"
     grant_type: "authorization-code"
+    # jwt_provider_list is only used when token_validation_mode is "internal"
     jwt_provider_list: "/Common/{{ vs1_name }}-list"
+    oauth_provider: "/Common/{{ vs1_name }}-provider"
     openid_connect: "enabled"
     openid_flow_type: "code"
     redirection_uri: "https://%{session.server.network.name}/oauth/client/redirect"
-    token_validation_mode: "internal"
+    # Use "external" (introspection) when OAuth AS isn't reachable for OIDC discovery
+    # Use "internal" (JWT) when OAuth AS is reachable and OIDC discovery works
+    token_validation_mode: "{{ token_validation_mode }}"
     type: "scope"
 
 # =============================================================================
