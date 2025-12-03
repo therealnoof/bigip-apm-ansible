@@ -85,7 +85,7 @@
               class: "Service_HTTPS"
               virtualAddresses:
                 - "{{ as3_config.virtual_address }}"
-              virtualPort: "{{ as3_config.virtual_port }}"
+              virtualPort: "{{ as3_config.virtual_port | int }}"
               serverTLS: "{{ vs1_name }}-clientssl"
               pool: "iis-pool"
               snat: "auto"
