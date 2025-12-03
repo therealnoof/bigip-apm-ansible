@@ -224,7 +224,7 @@ policy_items:
     item_type: "action"
     loop: "false"
     agent_type: "variable-assign"
-    next_item: "/Common/{{ vs1_name }}-psp_end_allow"
+    nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
 
   # LDAP Query
   ldap_query:
@@ -237,9 +237,9 @@ policy_items:
     rules:
       - caption: "Query Passed"
         expression: "expr {[mcget {session.ldap.last.queryresult}] == 1}"
-        next_item: "/Common/{{ vs1_name }}-psp_act_variable_assign_1"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_variable_assign_1"
       - caption: "fallback"
-        next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
 
   # UPN Extract
   upn_extract:
@@ -249,7 +249,7 @@ policy_items:
     item_type: "action"
     loop: "false"
     agent_type: "variable-assign"
-    next_item: "/Common/{{ vs1_name }}-psp_act_ldap_query"
+    nextItem: "/Common/{{ vs1_name }}-psp_act_ldap_query"
 
   # OCSP Auth
   ocsp_auth:
@@ -262,9 +262,9 @@ policy_items:
     rules:
       - caption: "Successful"
         expression: "expr {[mcget {session.ocsp.last.result}] == 1}"
-        next_item: "/Common/{{ vs1_name }}-psp_act_variable_assign"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_variable_assign"
       - caption: "fallback"
-        next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
 
   # On-Demand Cert Auth
   client_cert_auth:
@@ -277,9 +277,9 @@ policy_items:
     rules:
       - caption: "Successful"
         expression: "expr {[mcget {session.ssl.cert.valid}] == \"0\"}"
-        next_item: "/Common/{{ vs1_name }}-psp_act_ocsp_auth"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_ocsp_auth"
       - caption: "fallback"
-        next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
 
   # Entry point
   entry:
@@ -288,7 +288,7 @@ policy_items:
     color: 1
     item_type: "entry"
     loop: "false"
-    next_item: "/Common/{{ vs1_name }}-psp_act_ondemand_cert_auth"
+    nextItem: "/Common/{{ vs1_name }}-psp_act_ondemand_cert_auth"
 
 # Access Policy
 access_policy:
