@@ -1,0 +1,374 @@
+---
+# Solution 6: Certificate-based Authentication with Kerberos SSO
+# Client certificate authentication with OCSP validation, LDAP query, and Kerberos SSO to backend
+
+# Solution Naming
+vs1_name: "solution6"
+dns1_name: "solution6.acme.com"
+partition_name: "solution6"
+path_name: "solution6"
+
+# Customization Type (use "standard" for maximum compatibility)
+custom_type: "standard"
+
+# BIG-IP Configuration
+bigip_mgmt: "{{ ansible_host }}"
+bigip_port: 443
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+
+# CA Certificate Configuration
+ca_certificate:
+  name: "ca.f5lab.local"
+  content: |
+    -----BEGIN CERTIFICATE-----
+    MIIDazCCAlOgAwIBAgIQJ4DA+pop3K9HGUl4CIxjbjANBgkqhkiG9w0BAQsFADBI
+    MRUwEwYKCZImiZPyLGQBGRYFbG9jYWwxFTATBgoJkiaJk/IsZAEZFgVmNWxhYjEY
+    MBYGA1UEAxMPZGMxLmY1bGFiLmxvY2FsMB4XDTE5MTEyMDIyMDc0NVoXDTI5MTEy
+    MDIyMTc0NVowSDEVMBMGCgmSJomT8ixkARkWBWxvY2FsMRUwEwYKCZImiZPyLGQB
+    GRYFZ jVsYWIxGDAWBgNVBAMTD2RjMS5mNWxhYi5sb2NhbDCCASIwDQYJKoZIhvcN
+    AQEBBQADggEPADCCAQoCggEBANOejxrkrJD12YIeEkZNjRZ9/OZwFeX+QhVi1uHL
+    iILP+4+3ZiZ/dhVGQLncDfHlJm5hSXpzMMDK+LxmjnWfBcx8xurgDyL6E80ZTnIP
+    BbVJ6Au2IWFXM62NK/qsE+5IF0ptAYzDiWjj75njoVQygMNkdWEPxu1N+Ar7WAR4
+    5xghN2wE7d57iCZ53RmrIeGT6equiihns5nUssoOFh/ny9oR6+yudINlozllHhMB
+    GRDCEeGC/0mY/LF50hP6vwEbl1ub0J1SlqlvTn3rrX7dumvtjSKxfQipwbCpG8Qz
+    Gi7ZsSe78Xg7VIGtDVk0Vh4+PbHVJ6GB8pUmFpQ4vVa6sY0CAwEAAaNRME8wCwYD
+    VR0PBAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFNhpUMHsIixtS9g6
+    y/FyNrayg9V6MBAGCSsGAQQBgjcVAQQDAgEAMA0GCSqGSIb3DQEBCwUAA4IBAQCr
+    EjJWFyZR3VFoIvZxUztGiWSjELJGD0vH42hONh6GrzxHadhZcQFmQsi4SmS9TUhP
+    qyj+mUzreWziMcogqTYisSmF6h/cyAujdnLPbR//spGSOvLlV+43P57FmpQ+c+bB
+    V8CJq3e0uvxt2h/9v5Du20fE/Zb6iPESMSjzhEoCPosozELpEqwKTzwGLsyqgLSN
+    WW/+Ov+DGr+cE8pHsXZy8yhkbDY5wrbHMCyrRuXFXwYLpoMcUKMOWUCq+K3TSQ2A
+    mGUtzY3KMfC7YCJj+mrCniWmvncryUpkY3hPplglevWAFQx4hslOU618gt4IpBXy
+    LlIC0DqyAVMHJqF7WozV
+    -----END CERTIFICATE-----
+
+# Kerberos SSO Configuration
+kerberos_sso:
+  name: "{{ vs1_name }}-kerbsso"
+  account_name: "HOST/{{ vs1_name }}.f5lab.local"
+  account_password: "{{ vs1_name }}"
+  location_specific: "false"
+  realm: "F5LAB.LOCAL"
+  send_authorization: "401"
+  spn_pattern: "HTTP/{{ vs1_name }}.acme.com"
+  ticket_lifetime: 600
+  upn_support: "disabled"
+  user_realm_source: "session.logon.last.domain"
+  username_source: "session.logon.last.username"
+
+# OCSP Configuration
+ocsp_servers:
+  name: "{{ vs1_name }}-ocsp-servers"
+  allow_certs: "true"
+  ca_file: "/Common/ca.f5lab.local"
+  ca_path: "/ocsp"
+  cert_id_digest: "sha1"
+  chain: "true"
+  check_certs: "true"
+  explicit_ocsp: "true"
+  ignore_aia: "false"
+  intern: "true"
+  location_specific: "true"
+  nonce: "false"
+  sign_digest: "sha1"
+  status_age: 0
+  trust_other: "false"
+  url: "http://dc1.f5lab.local"
+  validity_period: 300
+  verify: "true"
+  verify_cert: "true"
+  verify_sig: "true"
+
+# LDAP Configuration
+ldap_server_ip: "10.1.20.7"
+ldap_pool:
+  name: "{{ vs1_name }}-ldap-pool"
+  members:
+    - address: "{{ ldap_server_ip }}"
+      name: "{{ ldap_server_ip }}:0"
+      monitor: "/Common/gateway_icmp"
+
+ldap_aaa_server:
+  name: "{{ vs1_name }}-ldap-servers"
+  address: "any6"
+  admin_dn: "CN=Admin,CN=Users,DC=f5lab,DC=local"
+  admin_password: "admin"
+  cleanup_cache: "none"
+  group_cache_ttl: 30
+  is_ldaps: "false"
+  location_specific: "true"
+  pool: "/Common/{{ vs1_name }}-ldap-pool"
+  port: 389
+  schema_attr:
+    group_member: "member"
+    group_member_value: "dn"
+    group_memberof: "memberOf"
+    group_object_class: "group"
+    user_memberof: "memberOf"
+    user_object_class: "user"
+  timeout: 15
+  use_pool: "enabled"
+
+# Customization Groups (Order matters! Deny ending MUST be first)
+customization_groups:
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+# Policy Agents
+policy_agents:
+  # Allow ending agent (no customizationGroup)
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow_ag"
+
+  # Deny ending agent (WITH customizationGroup)
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny_ag"
+    customization_group: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+
+  # OCSP authentication agent
+  ocsp_auth:
+    name: "{{ vs1_name }}-psp_act_ocsp_auth_ag"
+    certificate_type: "user"
+    ocsp_responder: "/Common/{{ vs1_name }}-ocsp-servers"
+
+  # On-Demand Client Cert Auth agent
+  client_cert_auth:
+    name: "{{ vs1_name }}-psp_act_ondemand_cert_auth_ag"
+    mode: "request"
+
+  # LDAP Query agent
+  ldap_query:
+    name: "{{ vs1_name }}-psp_act_ldap_query_ag"
+    attr_name:
+      - "sAMAccountName"
+    filter: "(userPrincipalName=%{session.custom.upn})"
+    group_member_scope: "none"
+    group_membership_scope: "none"
+    max_logon_attempt: 3
+    max_pwd_reset_attempt: 3
+    pwd_complexity_check: "false"
+    search_dn: "dc=f5lab, dc=local\n"
+    server: "/Common/{{ vs1_name }}-ldap-servers"
+    show_extended_error: "false"
+    type: "query"
+
+  # UPN Extract - Variable Assign agent
+  upn_extract:
+    name: "{{ vs1_name }}-psp_act_variable_assign_ag"
+    type: "general"
+    variables:
+      - append: "false"
+        expression: "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \\\"\\\\n\\\"];\\n# For each element in the list:\\nforeach field $x509e_fields {\\n# If the element contains UPN:\\nif { $field contains \\\"othername:UPN\\\" } {\\n## set start of UPN variable\\nset start [expr {[string first \\\"othername:UPN<\\\" $field] +14}]\\n# UPN format is <user@domain>\\n# Return the UPN, by finding the index of opening and closing brackets, then use string range to get everything between.\\nreturn [string range $field $start [expr { [string first \\\">\\\" $field $start] - 1 } ] ];  } }\\n# Otherwise return UPN Not Found:\\nreturn \\\"UPN-NOT-FOUND\\\";"
+        secure: "false"
+        varname: "session.custom.upn"
+
+  # Set Variables - Variable Assign agent
+  set_variables:
+    name: "{{ vs1_name }}-psp_act_variable_assign_1_ag"
+    type: "general"
+    variables:
+      - append: "false"
+        expression: "mcget {session.ldap.last.attr.sAMAccountName}"
+        secure: "false"
+        varname: "session.logon.last.username"
+      - append: "false"
+        expression: "return {F5LAB.LOCAL}"
+        secure: "false"
+        varname: "session.logon.last.domain"
+
+# Policy Items
+policy_items:
+  # Allow ending
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  # Deny ending
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+  # Set Variables
+  set_variables:
+    name: "{{ vs1_name }}-psp_act_variable_assign_1"
+    caption: "set_variables"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "variable-assign"
+    next_item: "/Common/{{ vs1_name }}-psp_end_allow"
+
+  # LDAP Query
+  ldap_query:
+    name: "{{ vs1_name }}-psp_act_ldap_query"
+    caption: "LDAP Query"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-ldap"
+    rules:
+      - caption: "Query Passed"
+        expression: "expr {[mcget {session.ldap.last.queryresult}] == 1}"
+        next_item: "/Common/{{ vs1_name }}-psp_act_variable_assign_1"
+      - caption: "fallback"
+        next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # UPN Extract
+  upn_extract:
+    name: "{{ vs1_name }}-psp_act_variable_assign"
+    caption: "upn_extract"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "variable-assign"
+    next_item: "/Common/{{ vs1_name }}-psp_act_ldap_query"
+
+  # OCSP Auth
+  ocsp_auth:
+    name: "{{ vs1_name }}-psp_act_ocsp_auth"
+    caption: "OCSP Auth"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-ocsp"
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.ocsp.last.result}] == 1}"
+        next_item: "/Common/{{ vs1_name }}-psp_act_variable_assign"
+      - caption: "fallback"
+        next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # On-Demand Cert Auth
+  client_cert_auth:
+    name: "{{ vs1_name }}-psp_act_ondemand_cert_auth"
+    caption: "On-Demand Cert Auth"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-client-cert"
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.ssl.cert.valid}] == \"0\"}"
+        next_item: "/Common/{{ vs1_name }}-psp_act_ocsp_auth"
+      - caption: "fallback"
+        next_item: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # Entry point
+  entry:
+    name: "{{ vs1_name }}-psp_ent"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    next_item: "/Common/{{ vs1_name }}-psp_act_ondemand_cert_auth"
+
+# Access Policy
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  default_ending: "{{ vs1_name }}-psp_end_allow"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+  start_item: "{{ vs1_name }}-psp_ent"
+  type: "access-policy"
+  items:
+    - name: "{{ vs1_name }}-psp_act_ldap_query"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_ocsp_auth"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_ondemand_cert_auth"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_variable_assign"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_variable_assign_1"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+
+# Access Profile
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  accept_languages:
+    - "en"
+  access_policy: "/Common/{{ vs1_name }}-psp"
+  customization_group: "/Common/{{ vs1_name }}-psp_logout"
+  eps_group: "/Common/{{ vs1_name }}-psp_eps"
+  errormap_group: "/Common/{{ vs1_name }}-psp_errormap"
+  framework_installation_group: "/Common/{{ vs1_name }}-psp_framework_installation"
+  general_ui_group: "/Common/{{ vs1_name }}-psp_general_ui"
+  sso_name: "/Common/{{ vs1_name }}-kerbsso"
+  access_policy_timeout: 300
+  default_language: "en"
+  httponly_cookie: "false"
+  inactivity_timeout: 900
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  max_in_progress_sessions: 128
+  max_session_timeout: 604800
+  min_failure_delay: 2
+  modified_since_last_policy_sync: "false"
+  persistent_cookie: "false"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  secure_cookie: "true"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  log_settings:
+    - "/Common/default-log-setting"
+
+# AS3 Application Configuration
+as3_config:
+  virtual_address: "10.1.10.160"
+  virtual_port: 443
+  pool_members:
+    - "10.1.20.6:80"  # IIS backend server
+  client_ssl_profile:
+    authentication_invite_ca: "/Common/ca.f5lab.local"
+    authentication_trust_ca: "/Common/ca.f5lab.local"
+    certificate: "/Common/acme.com-wildcard"
+    private_key: "/Common/acme.com-wildcard"
+
+# Feature Flags
+deploy_application_via_as3: true
+configure_external_dns: false  # Set to true if GSLB is needed
+
+# GSLB Configuration (optional)
+gslb_enabled: false
+gslb_dns_server: "10.1.1.11"
+gslb_dc1_name: "DC1"
+gslb_dc2_enabled: false
+gslb_dc2_name: "DC2"
