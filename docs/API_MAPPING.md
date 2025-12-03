@@ -1152,6 +1152,435 @@ Common errors encountered during Solution 4 implementation:
 
 ---
 
+## Solution 6 Critical Implementation Details
+
+Solution 6 (Certificate-based Authentication with Kerberos SSO) implements client certificate validation with OCSP, UPN extraction from X.509 certificates, LDAP queries, and Kerberos SSO. This solution requires careful handling of certificate authentication modes, TCL expressions, and field name conventions.
+
+### CA Certificate Import
+
+**Postman:** Multi-step upload with Content-Range headers
+
+**Ansible:** Automated certificate upload and installation
+```yaml
+# tasks/import_ca_certificate.yml
+- name: Prepare CA certificate content
+  set_fact:
+    ca_cert_content_raw: "{{ ca_certificate.content }}"
+    ca_cert_length: "{{ ca_certificate.content | length }}"
+
+- name: Upload CA certificate file to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ ca_certificate.filename }}"
+    method: POST
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Range: "0-{{ ca_cert_length | int - 1 }}/{{ ca_cert_length }}"
+    body: "{{ ca_cert_content_raw }}"
+    status_code: [200, 201]
+
+- name: Install CA certificate on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+    method: POST
+    body:
+      command: "install"
+      name: "{{ ca_certificate.name }}"
+      from-local-file: "/var/config/rest/downloads/{{ ca_certificate.filename }}"
+    status_code: [200, 201, 409]
+```
+
+**Critical Notes:**
+- Content-Range header is REQUIRED for file uploads
+- Range format: `0-{length-1}/{length}` (zero-indexed)
+- Certificate must exist before OCSP/client cert agents can reference it
+- Status code 409 indicates certificate already exists (idempotent)
+
+**File:** `tasks/import_ca_certificate.yml`
+
+---
+
+### Kerberos SSO Profile
+
+**Postman:** Created outside transaction (no X-F5-REST-Coordination-Id header)
+
+**Ansible:** Created before transaction begins
+```yaml
+# tasks/kerberos_sso.yml
+- name: Create Kerberos SSO profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/kerberos/"
+    method: POST
+    body:
+      name: "{{ kerberos_sso.name }}"
+      partition: "Common"
+      accountName: "{{ kerberos_sso.account_name }}"
+      accountPassword: "{{ kerberos_sso.account_password }}"
+      realm: "{{ kerberos_sso.realm }}"
+      spnPattern: "{{ kerberos_sso.spn_pattern }}"
+      usernameSource: "{{ kerberos_sso.username_source }}"
+    status_code: [200, 201, 409]
+```
+
+**Critical Notes:**
+- Created OUTSIDE transaction (no coordination header)
+- Must exist before access profile references it via `ssoName` field
+- `accountName` should be domain service account (e.g., `HTTP_SVC@F5LAB.LOCAL`)
+- `spnPattern` defines how SPN is constructed (e.g., `HTTP/%h@F5LAB.LOCAL`)
+- `usernameSource` typically: `session.logon.last.username`
+
+**File:** `tasks/kerberos_sso.yml`
+
+---
+
+### OCSP Validation Configuration
+
+**Postman:** Simple AAA OCSP server creation
+
+**Ansible:** OCSP responder configuration for certificate revocation checking
+```yaml
+# tasks/ocsp_servers.yml
+- name: Create OCSP servers configuration
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/ocsp"
+    method: POST
+    body:
+      name: "{{ ocsp_servers.name }}"
+      partition: "Common"
+      url: "{{ ocsp_servers.url }}"
+    status_code: [200, 201, 409]
+```
+
+**Critical Notes:**
+- OCSP server must be accessible from BIG-IP management interface
+- URL format: `http://ocsp.example.com/ocsp` or `http://ocsp.example.com`
+- Created OUTSIDE transaction
+- Referenced by OCSP authentication agent via `ocspResponder` field
+
+**File:** `tasks/ocsp_servers.yml`
+
+---
+
+### LDAP Query Configuration (Non-Authentication)
+
+**Postman:** LDAP AAA server with type: "query"
+
+**Ansible:** LDAP node, pool, and AAA server for user attribute lookups
+```yaml
+# tasks/ldap_aaa_server.yml
+- name: Create LDAP server node
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+    method: POST
+    body:
+      name: "{{ ldap_server_ip }}"
+      address: "{{ ldap_server_ip }}"
+    status_code: [200, 201, 409]
+
+- name: Create LDAP server pool
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+    method: POST
+    body:
+      name: "{{ ldap_pool.name }}"
+      members:
+        - "{{ ldap_server_ip }}:389"
+      monitor: "/Common/tcp"
+    status_code: [200, 201, 409]
+
+- name: Create APM AAA LDAP server
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/ldap/"
+    method: POST
+    body:
+      name: "{{ ldap_aaa_server.name }}"
+      partition: "Common"
+      adminDn: "{{ ldap_aaa_server.admin_dn }}"
+      adminEncryptedPassword: "{{ ldap_aaa_server.admin_password }}"
+      searchBaseDn: "{{ ldap_aaa_server.search_base_dn }}"
+      searchFilter: "{{ ldap_aaa_server.search_filter }}"
+      server: "/Common/{{ ldap_pool.name }}"
+    status_code: [200, 201, 409]
+```
+
+**Critical Notes:**
+- LDAP is used for QUERY only, not authentication
+- `searchFilter` should match UPN: `(userPrincipalName=%{session.custom.upn})`
+- `attrName` in LDAP query agent: `["sAMAccountName"]` to retrieve username
+- LDAP server must be created OUTSIDE transaction
+- Pool reference format: `/Common/pool-name`
+
+**File:** `tasks/ldap_aaa_server.yml`
+
+---
+
+### UPN Extraction from X.509 Certificates
+
+**Critical:** TCL expression must be properly escaped for JSON transmission
+
+**Postman:** TCL expression with newline escaping
+```json
+{
+  "expression": "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \"\\n\"];\n# For each element...",
+  "varname": "session.custom.upn"
+}
+```
+
+**Ansible:** Single-line with proper escape sequences
+```yaml
+# vars/solution6.yml
+policy_agents:
+  upn_extract:
+    name: "{{ vs1_name }}-psp_act_variable_assign_ag"
+    type: "general"
+    variables:
+      - varname: "session.custom.upn"
+        expression: "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \\\"\\\\n\\\"];\\n# For each element in the list:\\nforeach field $x509e_fields {\\n# If the element contains UPN:\\nif { $field contains \\\"othername:UPN\\\" } {\\n## set start of UPN variable\\nset start [expr {[string first \\\"othername:UPN<\\\" $field] +14}]\\n# UPN format is <user@domain>\\n# Return the UPN, by finding the index of opening and closing brackets, then use string range to get everything between.\\nreturn [string range $field $start [expr { [string first \\\">\\\" $field $start] - 1 } ] ];  } }\\n# Otherwise return UPN Not Found:\\nreturn \\\"UPN-NOT-FOUND\\\";"
+        secure: "false"
+        append: "false"
+```
+
+**Critical Notes:**
+- TCL expression must be on ONE line (use `\\n` for newlines, not actual line breaks)
+- Quotes must be escaped: `\\\"` for literal quotes in TCL
+- Backslashes must be double-escaped: `\\\\n` for literal `\n` in TCL
+- Expression extracts UPN from X.509 extension field `othername:UPN<user@domain>`
+- Returns "UPN-NOT-FOUND" if UPN not present in certificate
+
+**File:** `vars/solution6.yml` (line 183)
+
+---
+
+### Client Certificate Authentication Mode
+
+**Critical:** Use "request" mode for on-demand certificate authentication
+
+**Postman:**
+```json
+{
+  "name": "{{VS1_NAME}}-psp_act_ondemand_cert_auth_ag",
+  "mode": "request",
+  "partition": "Common"
+}
+```
+
+**Ansible:**
+```yaml
+# tasks/access_policy_solution6.yml
+- name: Create on-demand client cert auth agent
+  uri:
+    body:
+      name: "{{ policy_agents.client_cert_auth.name }}"
+      partition: "Common"
+      mode: "request"  # CRITICAL: "request" not "require"
+```
+
+**Modes Explained:**
+- `request`: Client cert is requested but not required at SSL handshake; APM validates during policy execution
+- `require`: Client cert is required at SSL handshake; connection fails if not provided
+- `ignore`: No client cert authentication
+
+**Why "request" mode:**
+- Allows APM policy to control authentication flow
+- Better error handling and user feedback
+- Can branch on `session.ssl.cert.valid` variable
+- Supports fallback to other auth methods
+
+**File:** `tasks/access_policy_solution6.yml` (line 147)
+
+---
+
+### camelCase vs snake_case Field Names
+
+**CRITICAL:** BIG-IP APM API requires camelCase for certain fields, not snake_case
+
+**Incorrect (causes transaction failure):**
+```yaml
+policy_items:
+  entry:
+    next_item: "/Common/{{ vs1_name }}-psp_act_ondemand_cert_auth"  # WRONG
+```
+
+**Correct:**
+```yaml
+policy_items:
+  entry:
+    nextItem: "/Common/{{ vs1_name }}-psp_act_ondemand_cert_auth"  # CORRECT
+```
+
+**Field Name Convention:**
+- `nextItem` (NOT `next_item`)
+- `defaultEnding` (NOT `default_ending`)
+- `startItem` (NOT `start_item`)
+- `maxMacroLoopCount` (NOT `max_macro_loop_count`)
+- `itemType` (NOT `item_type`)
+
+**Common Error:**
+```
+transaction failed:01070277:3: The requested access policy item () was not found.
+```
+This error with empty parentheses `()` indicates a field name mismatch.
+
+**File:** `vars/solution6.yml` (lines 227, 240, 242, etc.)
+
+---
+
+### Avoiding Python dict.items() Collision
+
+**CRITICAL:** In Ansible/Jinja2, dictionary keys named "items" collide with Python's built-in `dict.items()` method
+
+**Incorrect (causes error):**
+```yaml
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  items:  # WRONG - Collides with dict.items() method
+    - name: "{{ vs1_name }}-psp_act_ldap_query"
+      partition: "Common"
+```
+
+**Error Message:**
+```
+"items": "<built-in method items of dict object at 0x7fedce781c00>"
+```
+
+**Correct:**
+```yaml
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  policy_items:  # CORRECT - Renamed to avoid collision
+    - name: "{{ vs1_name }}-psp_act_ldap_query"
+      partition: "Common"
+```
+
+**Then reference as:**
+```yaml
+items: "{{ access_policy.policy_items }}"  # Maps to API's "items" field
+```
+
+**File:** `vars/solution6.yml` (line 301), `tasks/access_policy_solution6.yml` (line 441)
+
+---
+
+### AS3 Dynamic Dictionary Keys with combine Filter
+
+**CRITICAL:** Jinja2 variables used as dictionary keys in YAML don't evaluate properly when nested in `uri` module body
+
+**Incorrect (variables not evaluated):**
+```yaml
+- name: Create AS3 declaration
+  uri:
+    body:
+      declaration:
+        "{{ partition_name }}":  # Sent as literal string "{{ partition_name }}"
+          class: "Tenant"
+```
+
+**Error:**
+```
+'/: propertyName "{{ partition_name }}" should match pattern "^[A-Za-z][0-9A-Za-z_.-]*$"'
+```
+
+**Correct (use combine filter):**
+```yaml
+- name: Build declaration
+  set_fact:
+    declaration_config:
+      class: "ADC"
+      schemaVersion: "3.14.0"
+
+- name: Add tenant to declaration
+  set_fact:
+    declaration_config: "{{ declaration_config | combine({partition_name: tenant_config}) }}"
+
+- name: Create AS3 declaration
+  uri:
+    body: "{{ declaration_config }}"
+```
+
+**Why this works:**
+- `{partition_name: value}` syntax evaluates `partition_name` as a variable
+- `combine` filter merges dictionaries programmatically
+- Build nested structure from inside out: pool → app → tenant → declaration
+
+**File:** `deploy_apm_cert_kerb.yml` (lines 70-156)
+
+---
+
+### AS3 Integer Type Preservation
+
+**CRITICAL:** AS3 schema validation requires integer types for certain fields like `virtualPort`
+
+**Incorrect (sent as string):**
+```yaml
+virtualPort: "{{ as3_config.virtual_port }}"  # Evaluates to string "443"
+```
+
+**Error:**
+```
+'/solution6/solution6/solution6/virtualPort: should be integer'
+```
+
+**Correct (preserve integer type):**
+```yaml
+- name: Build virtual server config
+  set_fact:
+    vs_config:
+      virtualPort: 443  # Unquoted integer literal
+```
+
+**Type Preservation Rules:**
+- Use unquoted literals in YAML for integers: `443` not `"443"`
+- Avoid Jinja2 templates in `vars` blocks for integer fields
+- Even with `| int` filter, quoted values become strings in JSON serialization
+- Separate `set_fact` tasks preserve types better than inline `vars`
+
+**File:** `deploy_apm_cert_kerb.yml` (line 86)
+
+---
+
+### Policy Item Rules Structure
+
+**Postman:** Rules array with caption, expression, and nextItem
+
+**Ansible:** Identical structure with proper field names
+```yaml
+policy_items:
+  client_cert_auth:
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.ssl.cert.valid}] == \"0\"}"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_ocsp_auth"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+```
+
+**Critical Notes:**
+- Certificate validation: `{session.ssl.cert.valid} == "0"` (0 = valid, non-zero = invalid)
+- OCSP validation: `{session.ocsp.last.result} == 1` (1 = success)
+- LDAP query result: `{session.ldap.last.queryresult} == 1` (1 = success)
+- Always include "fallback" rule as final catch-all
+- `nextItem` must use camelCase (NOT `next_item`)
+- All references must use full path: `/Common/item-name`
+
+**File:** `vars/solution6.yml` (lines 262-282)
+
+---
+
+### File Location Reference (Solution 6)
+
+| Component | File Path |
+|-----------|-----------|
+| Solution 6 playbook | `deploy_apm_cert_kerb.yml` |
+| Solution 6 delete playbook | `delete_apm_cert_kerb.yml` |
+| Solution 6 variables | `vars/solution6.yml` |
+| CA certificate import | `tasks/import_ca_certificate.yml` |
+| Kerberos SSO profile | `tasks/kerberos_sso.yml` |
+| OCSP servers | `tasks/ocsp_servers.yml` |
+| LDAP AAA server | `tasks/ldap_aaa_server.yml` |
+| Access policy (Solution 6) | `tasks/access_policy_solution6.yml` |
+| Solution 6 source | [solution6-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution6/postman/solution6-create.postman_collection.json) |
+
+---
+
 ## Migration Path
 
 ### From Postman to Ansible
@@ -1182,15 +1611,24 @@ To add additional solutions:
 | Solution 2 playbook | `deploy_apm_portal.yml` |
 | Solution 3 playbook | `deploy_apm_saml.yml` |
 | Solution 4 playbook | `deploy_apm_saml_idp.yml` |
+| Solution 5 playbook | `deploy_apm_saml_sp_internal.yml` |
+| Solution 6 playbook | `deploy_apm_cert_kerb.yml` |
 | Solution 1 variables | `vars/main.yml` |
 | Solution 2 variables | `vars/solution2.yml` |
 | Solution 3 variables | `vars/solution3.yml` |
 | Solution 4 variables | `vars/solution4.yml` |
+| Solution 5 variables | `vars/solution5.yml` |
+| Solution 6 variables | `vars/solution6.yml` |
 | AAA AD tasks | `tasks/aaa_ad_servers.yml` |
 | SAML IDP Connector (Sol 3) | `tasks/saml_idp_connector.yml` |
 | SAML Service Provider (Sol 3) | `tasks/saml_sp.yml` |
 | SAML SP Connector (Sol 4) | `tasks/saml_sp_connector.yml` |
 | SAML IDP Service (Sol 4) | `tasks/saml_idp_service.yml` |
+| SAML SP (Sol 5) | `tasks/saml_sp_solution5.yml` |
+| CA Certificate Import (Sol 6) | `tasks/import_ca_certificate.yml` |
+| Kerberos SSO (Sol 6) | `tasks/kerberos_sso.yml` |
+| OCSP Servers (Sol 6) | `tasks/ocsp_servers.yml` |
+| LDAP AAA Server (Sol 6) | `tasks/ldap_aaa_server.yml` |
 | Connectivity tasks | `tasks/connectivity_profile.yml` |
 | Network access tasks | `tasks/network_access.yml` |
 | Portal resources tasks | `tasks/portal_resources.yml` |
@@ -1199,12 +1637,16 @@ To add additional solutions:
 | Access policy (Sol 2) | `tasks/access_policy_solution2.yml` |
 | Access policy (Sol 3) | `tasks/access_policy_solution3.yml` |
 | Access policy (Sol 4) | `tasks/access_policy_solution4.yml` |
+| Access policy (Sol 5) | `tasks/access_policy_solution5.yml` |
+| Access policy (Sol 6) | `tasks/access_policy_solution6.yml` |
 | AS3 deployment tasks | `tasks/as3_deployment.yml` |
 | GSLB tasks | `tasks/gslb_configuration.yml` |
 | Solution 1 source | `docs/solution1-create.postman_collection.json` |
 | Solution 2 source | `docs/solution2-create.postman_collection.json` |
 | Solution 3 source | `docs/solution3-create.postman_collection.json` |
 | Solution 4 source | `docs/solution4-create.postman_collection.json` |
+| Solution 5 source | [solution5-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution5/postman/solution5-create.postman_collection.json) |
+| Solution 6 source | [solution6-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution6/postman/solution6-create.postman_collection.json) |
 
 ---
 
