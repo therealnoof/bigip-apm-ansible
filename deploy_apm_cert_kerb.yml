@@ -67,50 +67,93 @@
     - name: Deploy application using AS3
       when: deploy_application_via_as3 | default(true) | bool
       block:
-        - name: Prepare AS3 declaration
+        - name: Prepare pool members
+          set_fact:
+            pool_members_list: "{{ as3_config.pool_members | map('regex_replace', '^(.+):([0-9]+)$', '{\"serverAddresses\": [\"\\1\"], \"servicePort\": \\2}') | map('from_json') | list }}"
+
+        - name: Build application configuration
+          set_fact:
+            app_config:
+              class: "Application"
+              template: "generic"
+
+        - name: Add virtual server to application
+          set_fact:
+            app_config: "{{ app_config | combine({vs1_name: vs_config}) }}"
+          vars:
+            vs_config:
+              class: "Service_HTTPS"
+              virtualAddresses:
+                - "{{ as3_config.virtual_address }}"
+              virtualPort: "{{ as3_config.virtual_port }}"
+              serverTLS: "{{ vs1_name }}-clientssl"
+              pool: "iis-pool"
+              snat: "auto"
+              profileAccess:
+                bigip: "/Common/{{ partition_name }}-psp"
+
+        - name: Add TLS server profile to application
+          set_fact:
+            app_config: "{{ app_config | combine({tls_profile_name: tls_config}) }}"
+          vars:
+            tls_profile_name: "{{ vs1_name }}-clientssl"
+            tls_config:
+              class: "TLS_Server"
+              authenticationInviteCA:
+                bigip: "{{ as3_config.client_ssl_profile.authentication_invite_ca }}"
+              authenticationTrustCA:
+                bigip: "{{ as3_config.client_ssl_profile.authentication_trust_ca }}"
+              certificates:
+                - certificate: "tlsserver_local_cert"
+
+        - name: Add certificate to application
+          set_fact:
+            app_config: "{{ app_config | combine({'tlsserver_local_cert': cert_config}) }}"
+          vars:
+            cert_config:
+              class: "Certificate"
+              certificate:
+                bigip: "{{ as3_config.client_ssl_profile.certificate }}"
+              privateKey:
+                bigip: "{{ as3_config.client_ssl_profile.private_key }}"
+
+        - name: Add pool to application
+          set_fact:
+            app_config: "{{ app_config | combine({'iis-pool': pool_config}) }}"
+          vars:
+            pool_config:
+              class: "Pool"
+              members: "{{ pool_members_list }}"
+              monitors:
+                - "icmp"
+
+        - name: Build tenant configuration
+          set_fact:
+            tenant_config:
+              class: "Tenant"
+
+        - name: Add application to tenant
+          set_fact:
+            tenant_config: "{{ tenant_config | combine({path_name: app_config}) }}"
+
+        - name: Build declaration
+          set_fact:
+            declaration_config:
+              class: "ADC"
+              schemaVersion: "3.14.0"
+              id: "APM"
+
+        - name: Add tenant to declaration
+          set_fact:
+            declaration_config: "{{ declaration_config | combine({partition_name: tenant_config}) }}"
+
+        - name: Prepare final AS3 declaration
           set_fact:
             as3_declaration:
               class: "ADC"
               action: "deploy"
               persist: true
-              declaration:
-                class: "ADC"
-                schemaVersion: "3.14.0"
-                id: "APM"
-                "{{ partition_name }}":
-                  class: "Tenant"
-                  "{{ path_name }}":
-                    class: "Application"
-                    template: "generic"
-                    "{{ vs1_name }}":
-                      class: "Service_HTTPS"
-                      virtualAddresses:
-                        - "{{ as3_config.virtual_address }}"
-                      virtualPort: "{{ as3_config.virtual_port }}"
-                      serverTLS: "{{ vs1_name }}-clientssl"
-                      pool: "iis-pool"
-                      snat: "auto"
-                      profileAccess:
-                        bigip: "/Common/{{ partition_name }}-psp"
-                    "{{ vs1_name }}-clientssl":
-                      class: "TLS_Server"
-                      authenticationInviteCA:
-                        bigip: "{{ as3_config.client_ssl_profile.authentication_invite_ca }}"
-                      authenticationTrustCA:
-                        bigip: "{{ as3_config.client_ssl_profile.authentication_trust_ca }}"
-                      certificates:
-                        - certificate: "tlsserver_local_cert"
-                    "tlsserver_local_cert":
-                      class: "Certificate"
-                      certificate:
-                        bigip: "{{ as3_config.client_ssl_profile.certificate }}"
-                      privateKey:
-                        bigip: "{{ as3_config.client_ssl_profile.private_key }}"
-                    "iis-pool":
-                      class: "Pool"
-                      members: "{{ as3_config.pool_members | map('regex_replace', '^(.+):([0-9]+)$', '{\"serverAddresses\": [\"\\1\"], \"servicePort\": \\2}') | map('from_json') | list }}"
-                      monitors:
-                        - "icmp"
+              declaration: "{{ declaration_config }}"
 
         - name: Create AS3 declaration for Solution 6
           uri:
