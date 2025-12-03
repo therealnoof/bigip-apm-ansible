@@ -1,0 +1,506 @@
+---
+# Solution 8: OAuth Authorization Server
+# BIG-IP APM as OAuth Authorization Server with AD Authentication
+#
+# Authentication Flow:
+# 1. User accesses OAuth Authorization endpoint
+# 2. Logon Page presents credentials form
+# 3. AD Authentication validates user credentials
+# 4. AD Query retrieves user attributes
+# 5. OAuth Authorization issues JWT tokens
+# 6. User receives access_token and refresh_token
+
+# =============================================================================
+# BIG-IP CONNECTION SETTINGS
+# =============================================================================
+
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no
+
+# =============================================================================
+# BASIC CONFIGURATION
+# =============================================================================
+
+# Virtual Server and DNS Configuration
+vs1_name: "as"
+dns1_name: "as.acme.com"
+partition_name: "solution8"
+path_name: "solution8"
+
+# Customization type: "standard" or "modern"
+# Use "standard" for maximum compatibility
+custom_type: "standard"
+
+# =============================================================================
+# ACTIVE DIRECTORY CONFIGURATION
+# =============================================================================
+
+# AD Server Node
+ad_server_ip: "10.1.20.7"
+ad_server_fqdn: "dc1.f5lab.local"
+
+# AD Domain Configuration
+ad_domain: "f5lab.local"
+ad_admin_user: "admin"
+ad_admin_password: "admin"
+
+# AD Pool Configuration
+ad_pool:
+  name: "{{ vs1_name }}-ad-pool"
+  monitor: "/Common/gateway_icmp"
+
+# AD AAA Server Configuration
+ad_aaa_server:
+  name: "{{ vs1_name }}-ad-servers"
+  admin_name: "{{ ad_admin_user }}"
+  admin_password: "{{ ad_admin_password }}"
+  domain: "{{ ad_domain }}"
+  cleanup_cache: "none"
+  group_cache_ttl: 30
+  kdc_lockout_duration: 0
+  location_specific: "true"
+  padata: "none"
+  pso_cache_ttl: 30
+  timeout: 15
+  use_pool: "enabled"
+  domain_controllers:
+    - name: "{{ ad_server_fqdn }}"
+      ip: "{{ ad_server_ip }}"
+
+# =============================================================================
+# JWK (JSON WEB KEY) CONFIGURATION
+# =============================================================================
+
+jwk_config:
+  name: "{{ vs1_name }}-jwk"
+  partition: "Common"
+  alg_type: "HS256"
+  auto_generated: "false"
+  include_x5c: "no"
+  key_id: "lab"
+  key_type: "octet"
+  key_use: "signing"
+  shared_secret: "secret"
+  shared_secret_enc_format: "none"
+  use_client_secret: "false"
+
+# =============================================================================
+# OAUTH PROFILE CONFIGURATION
+# =============================================================================
+
+oauth_profile:
+  name: "{{ vs1_name }}-oauth"
+  partition: "Common"
+  defaults_from: "/Common/oauth"
+  db_instance: "/Common/oauthdb"
+  issuer: "https://{{ dns1_name }}"
+
+  # Token Lifetimes (in seconds)
+  access_token_lifetime: 5
+  auth_code_lifetime: 5
+  id_token_lifetime: 5
+  jwt_access_token_lifetime: 120
+  jwt_refresh_token_lifetime: 120
+  refresh_token_lifetime: 480
+
+  # Token Configuration
+  jwt_token: "enabled"
+  opaque_token: "disabled"
+  generate_jwt_refresh_token: "true"
+  generate_refresh_token: "true"
+  reuse_access_token: "false"
+  reuse_refresh_token: "false"
+  per_user_token_limit: 255
+  refresh_token_usage_limit: 64
+
+  # JWT Configuration
+  jwt_ec_signature_format: "binary"
+  jwt_refresh_token_enc_secret: "123456"
+  primary_key: "/Common/{{ vs1_name }}-jwk"
+  subject: "%{session.assigned.uuid}"
+
+  # OpenID Connect (disabled for basic OAuth)
+  openid_connect: "disabled"
+  ignore_expired_cert: "false"
+
+  # OAuth Endpoints
+  auth_url: "/f5-oauth2/v1/authorize"
+  token_issuance_url: "/f5-oauth2/v1/token"
+  token_introspection_url: "/f5-oauth2/v1/introspect"
+  token_revocation_url: "/f5-oauth2/v1/revoke"
+  jwks_url: "/f5-oauth2/v1/jwks"
+  openid_cfg_url: "/f5-oauth2/v1/.well-known/openid-configuration"
+  userinfo_url: "/f5-oauth2/v1/userinfo"
+
+# =============================================================================
+# APM ACCESS POLICY CONFIGURATION
+# =============================================================================
+
+# APM Policy Settings
+apm_max_logon_attempts: 3
+apm_max_pwd_reset_attempts: 3
+apm_pwd_expiry_warn_days: 0
+
+# Customization Groups (order matters - deny ending first)
+customization_groups:
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_act_logon_page_ag"
+    type: "logon"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_act_oauth_authz_ag"
+    type: "oauth-authz"
+    source: "/Common/{{ custom_type }}"
+
+# =============================================================================
+# POLICY AGENTS
+# =============================================================================
+
+policy_agents:
+  # Allow Ending Agent
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow_ag"
+    partition: "Common"
+
+  # Deny Ending Agent
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny_ag"
+    partition: "Common"
+    customization_group: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+
+  # Logon Page Agent
+  logon_page:
+    name: "{{ vs1_name }}-psp_act_logon_page_ag"
+    partition: "Common"
+    customization_group: "/Common/{{ vs1_name }}-psp_act_logon_page_ag"
+    citrix_client_auth_type: "domain-only"
+    clean_sess_var1: "false"
+    clean_sess_var2: "false"
+    clean_sess_var3: "false"
+    clean_sess_var4: "false"
+    clean_sess_var5: "false"
+    field_modifiable1: "true"
+    field_modifiable2: "true"
+    field_modifiable3: "true"
+    field_modifiable4: "true"
+    field_modifiable5: "true"
+    field_type1: "text"
+    field_type2: "password"
+    field_type3: "none"
+    field_type4: "none"
+    field_type5: "none"
+    http_401_auth_level: "none"
+    post_var_name1: "username"
+    post_var_name2: "password"
+    post_var_name3: "field3"
+    post_var_name4: "field4"
+    post_var_name5: "field5"
+    sess_var_name1: "username"
+    sess_var_name2: "password"
+    sess_var_name3: "field3"
+    sess_var_name4: "field4"
+    sess_var_name5: "field5"
+    split_username: "false"
+    type: "form-based"
+    vmware_view_logon_screen: "windows-password"
+
+  # AD Authentication Agent
+  ad_auth:
+    name: "{{ vs1_name }}-psp_act_active_directory_auth_ag"
+    partition: "Common"
+    server: "/Common/{{ vs1_name }}-ad-servers"
+    auth_max_logon_attempts: "{{ apm_max_logon_attempts }}"
+    fetch_nested_groups: "false"
+    fetch_primary_group: "false"
+    hints: "false"
+    max_pwd_reset_attempt: "{{ apm_max_pwd_reset_attempts }}"
+    pwd_complexity_check: "false"
+    pwd_expiry_warn_days: "{{ apm_pwd_expiry_warn_days }}"
+    show_extended_error: "false"
+    type: "auth"
+    upn: "false"
+
+  # AD Query Agent
+  ad_query:
+    name: "{{ vs1_name }}-psp_act_active_directory_query_ag"
+    partition: "Common"
+    server: "/Common/{{ vs1_name }}-ad-servers"
+    auth_max_logon_attempts: "{{ apm_max_logon_attempts }}"
+    fetch_nested_groups: "false"
+    fetch_primary_group: "false"
+    hints: "false"
+    max_pwd_reset_attempt: "{{ apm_max_pwd_reset_attempts }}"
+    pwd_complexity_check: "false"
+    pwd_expiry_warn_days: "{{ apm_pwd_expiry_warn_days }}"
+    show_extended_error: "false"
+    type: "query"
+    upn: "false"
+    query_filter: "(sAMAccountName=%{session.logon.last.username})"
+    query_attr_names:
+      - "cn"
+      - "displayName"
+      - "distinguishedName"
+      - "dn"
+      - "employeeID"
+      - "givenName"
+      - "homeMDB"
+      - "mail"
+      - "memberOf"
+      - "mobile"
+      - "msDS-ResultantPSO"
+      - "name"
+      - "objectGUID"
+      - "otherMobile"
+      - "pager"
+      - "primaryGroupID"
+      - "pwdLastSet"
+      - "sAMAccountName"
+      - "sn"
+      - "telephoneNumber"
+      - "userAccountControl"
+      - "userPrincipalName"
+
+  # OAuth Authorization Agent
+  oauth_authz:
+    name: "{{ vs1_name }}-psp_act_oauth_authz_ag"
+    partition: "Common"
+    customization_group: "/Common/{{ vs1_name }}-psp_act_oauth_authz_ag"
+    prompt_for_authorization: "false"
+
+# =============================================================================
+# POLICY ITEMS
+# =============================================================================
+
+policy_items:
+  # Start/Entry Item
+  entry:
+    name: "{{ vs1_name }}-psp_ent"
+    partition: "Common"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    rules:
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_logon_page"
+
+  # Logon Page Item
+  logon_page:
+    name: "{{ vs1_name }}-psp_act_logon_page"
+    partition: "Common"
+    caption: "Logon Page"
+    color: 1
+    item_type: "action"
+    agent_type: "logon-page"
+    loop: "false"
+    rules:
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_active_directory_auth"
+
+  # AD Authentication Item
+  ad_auth:
+    name: "{{ vs1_name }}-psp_act_active_directory_auth"
+    partition: "Common"
+    caption: "AD Auth"
+    color: 1
+    item_type: "action"
+    agent_type: "aaa-active-directory"
+    loop: "false"
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.ad.last.authresult}] == 1}"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_active_directory_query"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # AD Query Item
+  ad_query:
+    name: "{{ vs1_name }}-psp_act_active_directory_query"
+    partition: "Common"
+    caption: "AD Query"
+    color: 1
+    item_type: "action"
+    agent_type: "aaa-active-directory"
+    loop: "false"
+    rules:
+      - caption: "AD Query Passed"
+        expression: "expr {[mcget {session.ad.last.queryresult}] == 1}"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_oauth_authz"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # OAuth Authorization Item
+  oauth_authz:
+    name: "{{ vs1_name }}-psp_act_oauth_authz"
+    partition: "Common"
+    caption: "OAuth Authorization"
+    color: 1
+    item_type: "action"
+    agent_type: "oauth-authz"
+    loop: "false"
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.oauth.authz.last.result}] == 1}"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # Allow Ending Item
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow"
+    partition: "Common"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  # Deny Ending Item
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny"
+    partition: "Common"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+# =============================================================================
+# ACCESS POLICY
+# =============================================================================
+
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  default_ending: "{{ vs1_name }}-psp_end_deny"
+  start_item: "{{ vs1_name }}-psp_ent"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+  type: "access-policy"
+  # NOTE: Using policy_items_list to avoid Python dict.items() collision
+  policy_items_list:
+    - name: "{{ vs1_name }}-psp_act_oauth_authz"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_active_directory_query"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_active_directory_auth"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_logon_page"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+
+# =============================================================================
+# ACCESS PROFILE
+# =============================================================================
+
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  access_policy: "/Common/{{ vs1_name }}-psp"
+  oauth_profile: "/Common/{{ vs1_name }}-oauth"
+  accept_languages:
+    - "en"
+  default_language: "en"
+  customization_group: "/Common/{{ vs1_name }}-psp_logout"
+  eps_group: "/Common/{{ vs1_name }}-psp_eps"
+  errormap_group: "/Common/{{ vs1_name }}-psp_errormap"
+  framework_installation_group: "/Common/{{ vs1_name }}-psp_framework_installation"
+  general_ui_group: "/Common/{{ vs1_name }}-psp_general_ui"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  max_session_timeout: 604800
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  min_failure_delay: 2
+  max_in_progress_sessions: 128
+  httponly_cookie: "false"
+  persistent_cookie: "false"
+  secure_cookie: "true"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  modified_since_last_policy_sync: "false"
+  log_settings:
+    - "/Common/default-log-setting"
+
+# =============================================================================
+# AS3 APPLICATION CONFIGURATION
+# =============================================================================
+
+as3_config:
+  # Virtual Server Address (update for your environment)
+  virtual_address: "10.1.10.108"
+  virtual_port: 443
+
+  # SSL/TLS Configuration
+  # Using default BIG-IP certificate
+  tls_cert_name: "default.crt"
+  tls_key_name: "default.key"
+
+  # Backend Pool (not typically needed for OAuth AS, but included for completeness)
+  # OAuth AS usually just serves tokens, no backend pool required
+
+  # SNAT Configuration
+  snat: "auto"
+
+# =============================================================================
+# GSLB CONFIGURATION (Optional)
+# =============================================================================
+
+enable_gslb: false
+
+gslb_config:
+  dns_server: "10.1.1.11"
+
+  # Datacenter 1
+  dc1:
+    name: "DC1"
+    bigip_server:
+      name: "bigip1.f5lab.local"
+      address: "10.1.10.4"
+
+  # Datacenter 2 (optional)
+  dc2:
+    name: "DC2"
+    bigip_server:
+      name: "bigip2.f5lab.local"
+      address: "10.1.10.5"
+
+  # WideIP Configuration
+  wideip:
+    domain_name: "{{ dns1_name }}"
+    resource_record_type: "A"
+    pool_lb_mode: "ratio"

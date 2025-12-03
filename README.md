@@ -98,6 +98,28 @@ This project automates the deployment of production-ready APM solutions includin
 4. VS2 receives username, sets session variables, applies Kerberos SSO
 5. Backend application receives Kerberos ticket (seamless SSO)
 
+### Solution 8: OAuth Authorization Server with AD Authentication
+- **OAuth 2.0 Authorization Server** - BIG-IP APM acts as OAuth AS issuing JWT tokens
+- **JWK Configuration** - JSON Web Key for JWT token signing (HS256)
+- **OAuth Profile** - Complete OAuth profile with token endpoints
+- **Active Directory Authentication** - User authentication via AD before token issuance
+- **AD Query** - Retrieve user attributes for token claims
+- **JWT Tokens** - Access tokens and refresh tokens with configurable lifetimes
+- **Access Policy** - Logon Page → AD Auth → AD Query → OAuth Authorization
+- **Application Deployment** - AS3-based HTTPS virtual server with OAuth endpoints
+
+**Use Case:** API security and OAuth 2.0 authorization flows. BIG-IP acts as the OAuth Authorization Server, authenticating users via Active Directory and issuing JWT tokens that can be validated by resource servers.
+
+**OAuth Endpoints:**
+- Authorization: `/f5-oauth2/v1/authorize`
+- Token: `/f5-oauth2/v1/token`
+- Token Introspection: `/f5-oauth2/v1/introspect`
+- Token Revocation: `/f5-oauth2/v1/revoke`
+- JWKS: `/f5-oauth2/v1/jwks`
+- OpenID Configuration: `/f5-oauth2/v1/.well-known/openid-configuration`
+
+**Source:** [solution8-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution8/postman/solution8-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -506,6 +528,32 @@ User → https://sp.acme.com (VS1 - Send Sideband)
    └─► Backend Application (with Kerberos ticket)
 ```
 
+### Solution 8: OAuth Authorization Server Flow
+
+```
+User/Client → https://as.acme.com (OAuth Authorization Server)
+   │
+   ├─ 1. /f5-oauth2/v1/authorize
+   │      ↓
+   ├─ 2. Logon Page: Collect credentials
+   │      ↓
+   ├─ 3. AD Authentication: Validate credentials
+   │      ↓
+   ├─ 4. AD Query: Retrieve user attributes
+   │      ↓
+   ├─ 5. OAuth Authorization: Generate tokens
+   │      ↓
+   └─ 6. Return JWT access_token + refresh_token
+
+Token Validation Flow:
+Client → Resource Server → /f5-oauth2/v1/introspect → Valid/Invalid
+```
+
+**OAuth Grant Types Supported:**
+- Authorization Code
+- Client Credentials
+- Resource Owner Password
+
 **Authentication Flow:**
 1. User accesses `https://solution6.acme.com`
 2. BIG-IP requests client certificate (on-demand, not required at TLS layer)
@@ -607,6 +655,7 @@ bigip-apm-ansible/
 ├── deploy_apm_saml_sp_internal.yml   # Solution 5: SAML SP with internal IDP
 ├── deploy_apm_cert_kerb.yml          # Solution 6: Certificate + Kerberos SSO
 ├── deploy_apm_sideband.yml           # Solution 7: SAML with Sideband Communication
+├── deploy_apm_oauth_as.yml           # Solution 8: OAuth Authorization Server
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
@@ -614,6 +663,7 @@ bigip-apm-ansible/
 ├── delete_apm_saml_sp_internal.yml   # Solution 5: Interactive deletion playbook
 ├── delete_apm_cert_kerb.yml          # Solution 6: Interactive deletion playbook
 ├── delete_apm_sideband.yml           # Solution 7: Interactive deletion playbook
+├── delete_apm_oauth_as.yml           # Solution 8: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
@@ -626,7 +676,8 @@ bigip-apm-ansible/
 │   ├── solution4.yml                 # Solution 4 variables (SAML IDP)
 │   ├── solution5.yml                 # Solution 5 variables (SAML SP internal)
 │   ├── solution6.yml                 # Solution 6 variables (Certificate + Kerberos)
-│   └── solution7.yml                 # Solution 7 variables (SAML + Sideband)
+│   ├── solution7.yml                 # Solution 7 variables (SAML + Sideband)
+│   └── solution8.yml                 # Solution 8 variables (OAuth Authorization Server)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -647,6 +698,7 @@ bigip-apm-ansible/
 │   ├── access_policy_solution6.yml    # Solution 6 policy with cert auth
 │   ├── access_policy_solution7_vs1.yml # Solution 7 VS1 policy (send sideband)
 │   ├── access_policy_solution7_vs2.yml # Solution 7 VS2 policy (receive sideband)
+│   ├── access_policy_solution8.yml    # Solution 8 policy with OAuth authorization
 │   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
 │   ├── import_ca_certificate.yml      # CA certificate import (Solution 6)
 │   ├── kerberos_sso.yml               # Kerberos SSO profile (Solution 6)
@@ -1092,6 +1144,86 @@ ansible-playbook deploy_apm_sideband.yml --tags policy
 ansible-playbook deploy_apm_sideband.yml --tags application,as3
 ```
 
+### Solution 8: OAuth Authorization Server
+
+Deploy the OAuth Authorization Server for API security and token-based authentication:
+
+```bash
+ansible-playbook deploy_apm_oauth_as.yml
+```
+
+**What Gets Deployed:**
+- **JWK Configuration:**
+  - JSON Web Key for JWT token signing (HS256 algorithm)
+  - Key ID and shared secret for token verification
+
+- **OAuth Profile:**
+  - Complete OAuth profile with all token endpoints
+  - JWT access tokens and refresh tokens
+  - Configurable token lifetimes
+
+- **Access Policy:**
+  - Logon Page for credential collection
+  - AD Authentication for user validation
+  - AD Query for retrieving user attributes
+  - OAuth Authorization for token generation
+  - Flow: Start → Logon Page → AD Auth → AD Query → OAuth Authz → Allow
+
+- **AS3 Application:**
+  - HTTPS virtual server with OAuth endpoints
+  - TLS server profile with default certificate
+
+**Configuration Variables** (vars/solution8.yml):
+```yaml
+# Virtual Server Names
+vs1_name: "as"
+dns1_name: "as.acme.com"
+
+# Partition
+partition_name: "solution8"
+
+# OAuth Configuration
+oauth_profile:
+  issuer: "https://as.acme.com"
+  jwt_access_token_lifetime: 120    # 2 minutes
+  jwt_refresh_token_lifetime: 120   # 2 minutes
+
+# JWK Configuration
+jwk_config:
+  alg_type: "HS256"
+  key_id: "lab"
+  shared_secret: "secret"
+
+# AS3 Virtual Address
+as3_config:
+  virtual_address: "10.1.10.108"
+```
+
+**OAuth Endpoints (after deployment):**
+```
+Authorization:    https://as.acme.com/f5-oauth2/v1/authorize
+Token:            https://as.acme.com/f5-oauth2/v1/token
+Introspection:    https://as.acme.com/f5-oauth2/v1/introspect
+Revocation:       https://as.acme.com/f5-oauth2/v1/revoke
+JWKS:             https://as.acme.com/f5-oauth2/v1/jwks
+OpenID Config:    https://as.acme.com/f5-oauth2/v1/.well-known/openid-configuration
+```
+
+**Deploy Specific Components (Tags):**
+```bash
+# Deploy only AAA/AD configuration
+ansible-playbook deploy_apm_oauth_as.yml --tags aaa,ad
+
+# Deploy only OAuth/JWK configuration
+ansible-playbook deploy_apm_oauth_as.yml --tags oauth,jwk
+
+# Deploy only access policy
+ansible-playbook deploy_apm_oauth_as.yml --tags policy
+
+# Deploy only AS3 application
+ansible-playbook deploy_apm_oauth_as.yml --tags application,as3
+```
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -1256,6 +1388,25 @@ ansible-playbook delete_apm_sideband.yml
 - IDP certificate (Okta signing cert)
 - SAML signing certificate and private key
 - AD AAA server, pool, and node
+
+### Remove Solution 8 (OAuth Authorization Server)
+
+To remove Solution 8 deployment:
+
+```bash
+ansible-playbook delete_apm_oauth_as.yml
+```
+
+**Deletes:**
+- AS3 application tenant (solution8)
+- Access profile with OAuth profile reference
+- Access policy and all policy items
+- Policy agents (logon page, AD auth, AD query, OAuth authz, endings)
+- All customization groups
+- OAuth profile
+- JWK configuration
+- AD AAA server, pool, and node
+- GSLB configuration (if deployed)
 
 ### Automated Cleanup (No Confirmation)
 
@@ -1650,7 +1801,16 @@ tail -f /var/log/restjavad.0.log
 - ✅ AS3 Application with 2 virtual servers and iRules (1 API call)
 - **Subtotal: 55+ API calls**
 
-**Grand Total: 315+ API calls automated across all solutions**
+#### Solution 8: OAuth Authorization Server
+- ✅ Active Directory configuration (3 API calls)
+- ✅ JWK Configuration (1 API call)
+- ✅ OAuth Profile (1 API call)
+- ✅ Access Policy with OAuth Authorization (25+ API calls with transaction)
+- ✅ AS3 Application Deployment (1 API call)
+- ✅ GSLB Configuration (optional, 6 API calls)
+- **Subtotal: 35+ API calls**
+
+**Grand Total: 350+ API calls automated across all solutions**
 
 ### Not Included (from original collections)
 
@@ -1774,6 +1934,16 @@ This playbook is provided as-is for automation purposes. Test thoroughly before 
 
 ## Changelog
 
+### Version 2.3.0
+- **Solution 8: OAuth Authorization Server with AD Authentication**
+  - BIG-IP APM as OAuth 2.0 Authorization Server
+  - JWK (JSON Web Key) configuration for JWT token signing
+  - OAuth Profile with complete token endpoints
+  - Access policy: Logon Page → AD Auth → AD Query → OAuth Authorization
+  - JWT access tokens and refresh tokens with configurable lifetimes
+  - Full deployment and cleanup playbooks
+- Updated API call counts: 350+ API calls across all solutions
+
 ### Version 2.2.0
 - **Solution 7: SAML Authentication with Sideband Communication**
   - Two coordinated virtual servers (VS1 send-sideband, VS2 receive-sideband)
@@ -1784,7 +1954,6 @@ This playbook is provided as-is for automation purposes. Test thoroughly before 
   - Separate access policies for each virtual server
   - AS3 deployment with two applications and iRules
   - Full deployment and cleanup playbooks
-- Updated API call counts: 315+ API calls across all solutions
 - Uses default BIG-IP certificate for SSL (default.crt/default.key)
 
 ### Version 2.1.0

@@ -1,0 +1,386 @@
+---
+# Solution 8: OAuth Authorization Server Cleanup
+# Removes all components created by deploy_apm_oauth_as.yml
+#
+# Usage:
+#   ansible-playbook delete_apm_oauth_as.yml
+#
+# This playbook removes (in reverse order):
+# - AS3 Application tenant
+# - Access Profile
+# - Access Policy and all policy items
+# - Policy agents
+# - Customization groups
+# - OAuth Profile
+# - JWK Configuration
+# - AD AAA Server, Pool, and Node
+# - GSLB configuration (if deployed)
+
+- name: Delete OAuth Authorization Server (Solution 8)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution8.yml
+
+  vars:
+    # Confirmation prompt
+    confirm_delete: false
+
+  tasks:
+    # =========================================================================
+    # CONFIRMATION PROMPT
+    # =========================================================================
+
+    - name: Confirm deletion
+      pause:
+        prompt: |
+          WARNING: This will delete all Solution 8 (OAuth Authorization Server) components:
+          - AS3 Tenant: {{ partition_name }}
+          - Access Profile: {{ vs1_name }}-psp
+          - OAuth Profile: {{ oauth_profile.name }}
+          - JWK: {{ jwk_config.name }}
+          - AD AAA Server: {{ ad_aaa_server.name }}
+
+          Type 'yes' to continue
+      register: confirm_result
+      when: not confirm_delete
+
+    - name: Check confirmation
+      fail:
+        msg: "Deletion cancelled by user"
+      when:
+        - not confirm_delete
+        - confirm_result.user_input | default('') != 'yes'
+
+    # =========================================================================
+    # DELETE AS3 APPLICATION
+    # =========================================================================
+
+    - name: Delete AS3 application tenant
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404, 422]
+        timeout: 120
+      register: as3_delete
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 tenant {{ partition_name }} deletion: {{ 'deleted' if as3_delete.status in [200, 204] else 'not found or error' }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DELETE ACCESS PROFILE
+    # =========================================================================
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - profile
+
+    # =========================================================================
+    # DELETE ACCESS POLICY
+    # =========================================================================
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE POLICY ITEMS
+    # =========================================================================
+
+    - name: Delete policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_ent"
+        - "{{ vs1_name }}-psp_act_logon_page"
+        - "{{ vs1_name }}-psp_act_active_directory_auth"
+        - "{{ vs1_name }}-psp_act_active_directory_query"
+        - "{{ vs1_name }}-psp_act_oauth_authz"
+        - "{{ vs1_name }}-psp_end_allow"
+        - "{{ vs1_name }}-psp_end_deny"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE POLICY AGENTS
+    # =========================================================================
+
+    - name: Delete logon page agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/logon-page/~Common~{{ vs1_name }}-psp_act_logon_page_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete AD authentication agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory/~Common~{{ vs1_name }}-psp_act_active_directory_auth_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete AD query agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory/~Common~{{ vs1_name }}-psp_act_active_directory_query_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete OAuth authorization agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/oauth-authz/~Common~{{ vs1_name }}-psp_act_oauth_authz_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete allow ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/~Common~{{ vs1_name }}-psp_end_allow_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete deny ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/~Common~{{ vs1_name }}-psp_end_deny_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    # =========================================================================
+    # DELETE CUSTOMIZATION GROUPS
+    # =========================================================================
+
+    - name: Delete customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_logout"
+        - "{{ vs1_name }}-psp_eps"
+        - "{{ vs1_name }}-psp_errormap"
+        - "{{ vs1_name }}-psp_framework_installation"
+        - "{{ vs1_name }}-psp_general_ui"
+        - "{{ vs1_name }}-psp_end_deny_ag"
+        - "{{ vs1_name }}-psp_act_logon_page_ag"
+        - "{{ vs1_name }}-psp_act_oauth_authz_ag"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - customization
+
+    # =========================================================================
+    # DELETE OAUTH PROFILE
+    # =========================================================================
+
+    - name: Delete OAuth profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/oauth/~Common~{{ oauth_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - profile
+
+    # =========================================================================
+    # DELETE JWK CONFIGURATION
+    # =========================================================================
+
+    - name: Delete JWK configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwk-config/~Common~{{ jwk_config.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - jwk
+
+    # =========================================================================
+    # DELETE AD AAA CONFIGURATION
+    # =========================================================================
+
+    - name: Delete AD AAA server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ ad_aaa_server.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    - name: Delete AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ ad_pool.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    - name: Delete AD server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ ad_server_ip }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    # =========================================================================
+    # DELETE GSLB CONFIGURATION (Optional)
+    # =========================================================================
+
+    - name: Delete GSLB configuration
+      block:
+        - name: Delete GSLB AS3 tenant
+          uri:
+            url: "https://{{ gslb_config.dns_server }}:443/mgmt/shared/appsvcs/declare/{{ partition_name }}-gslb"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200, 204, 404, 422]
+            timeout: 120
+
+        - name: Delete GTM virtual server from server
+          uri:
+            url: "https://{{ gslb_config.dns_server }}:443/mgmt/tm/gtm/server/~Common~{{ gslb_config.dc1.bigip_server.name }}/virtual-servers/~{{ partition_name }}~{{ vs1_name }}~{{ vs1_name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200, 404]
+
+        - name: Delete GTM server
+          uri:
+            url: "https://{{ gslb_config.dns_server }}:443/mgmt/tm/gtm/server/~Common~{{ gslb_config.dc1.bigip_server.name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200, 404]
+          ignore_errors: yes
+
+        - name: Delete datacenter
+          uri:
+            url: "https://{{ gslb_config.dns_server }}:443/mgmt/tm/gtm/datacenter/~Common~{{ gslb_config.dc1.name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200, 404]
+          ignore_errors: yes
+
+      when: enable_gslb | default(false) | bool
+      tags:
+        - gslb
+        - dns
+
+    # =========================================================================
+    # DELETION SUMMARY
+    # =========================================================================
+
+    - name: Display deletion summary
+      debug:
+        msg: |
+          ============================================================
+          OAuth Authorization Server Cleanup Complete
+          ============================================================
+
+          Deleted Components:
+          - AS3 Tenant: {{ partition_name }}
+          - Access Profile: {{ vs1_name }}-psp
+          - Access Policy: {{ vs1_name }}-psp
+          - OAuth Profile: {{ oauth_profile.name }}
+          - JWK: {{ jwk_config.name }}
+          - AD AAA Server: {{ ad_aaa_server.name }}
+          - AD Pool: {{ ad_pool.name }}
+          - AD Node: {{ ad_server_ip }}
+
+          ============================================================
+      tags:
+        - always
