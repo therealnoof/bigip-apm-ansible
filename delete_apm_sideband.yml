@@ -1,0 +1,495 @@
+---
+# Solution 7: Delete SAML Authentication with Sideband Communication
+# This playbook removes all Solution 7 configuration from BIG-IP
+
+- name: Delete APM Solution 7 - SAML Authentication with Sideband Communication
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution7.yml
+
+  tasks:
+    - name: Display deletion information
+      debug:
+        msg:
+          - "Deleting Solution 7: SAML Authentication with Sideband Communication"
+          - "VS1 (Send Sideband): {{ vs1_name }}"
+          - "VS2 (Receive Sideband): {{ vs2_name }}"
+          - "Partition: {{ partition_name }}"
+          - "BIG-IP: {{ bigip_mgmt }}"
+          - "WARNING: This will remove all Solution 7 configuration!"
+
+    #######################################
+    # Step 1: Delete AS3 Application
+    #######################################
+    - name: Delete AS3 application
+      when: deploy_application_via_as3 | default(true) | bool
+      block:
+        - name: Remove AS3 tenant
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            status_code: [200, 201, 404]
+            validate_certs: no
+            timeout: 120
+          register: as3_delete_result
+
+        - name: Display AS3 deletion result
+          debug:
+            msg: "AS3 tenant {{ partition_name }} deleted: {{ as3_delete_result.status }}"
+      tags:
+        - application
+        - as3
+
+    #######################################
+    # Step 2: Delete VS1 Access Profile
+    #######################################
+    - name: Delete VS1 access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_access_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      register: vs1_profile_delete_result
+      tags:
+        - policy
+        - vs1
+
+    #######################################
+    # Step 3: Delete VS1 Access Policy
+    #######################################
+    - name: Delete VS1 access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_access_policy.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      register: vs1_policy_delete_result
+      tags:
+        - policy
+        - vs1
+
+    #######################################
+    # Step 4: Delete VS1 Policy Items
+    #######################################
+    - name: Delete VS1 policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - "{{ vs1_policy_items.entry.name }}"
+        - "{{ vs1_policy_items.saml_auth.name }}"
+        - "{{ vs1_policy_items.ad_query.name }}"
+        - "{{ vs1_policy_items.variable_assign.name }}"
+        - "{{ vs1_policy_items.irule_event.name }}"
+        - "{{ vs1_policy_items.deny_ending.name }}"
+        - "{{ vs1_policy_items.allow_ending.name }}"
+      tags:
+        - policy
+        - vs1
+
+    #######################################
+    # Step 5: Delete VS1 Policy Agents
+    #######################################
+    - name: Delete VS1 SAML auth agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-saml/~Common~{{ vs1_policy_agents.saml_auth.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - vs1
+
+    - name: Delete VS1 AD query agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory/~Common~{{ vs1_policy_agents.ad_query.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - vs1
+
+    - name: Delete VS1 variable assign agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/~Common~{{ vs1_policy_agents.variable_assign.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - vs1
+
+    - name: Delete VS1 iRule event agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/irule-event/~Common~{{ vs1_policy_agents.irule_event.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - vs1
+
+    - name: Delete VS1 ending agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/{{ item.type }}/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - name: "{{ vs1_policy_agents.deny_ending.name }}"
+          type: "ending-deny"
+        - name: "{{ vs1_policy_agents.allow_ending.name }}"
+          type: "ending-allow"
+      tags:
+        - policy
+        - vs1
+
+    #######################################
+    # Step 6: Delete VS1 Customization Groups
+    #######################################
+    - name: Delete VS1 customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop: "{{ vs1_customization_groups | reverse }}"
+      tags:
+        - policy
+        - vs1
+
+    #######################################
+    # Step 7: Delete VS2 Access Profile
+    #######################################
+    - name: Delete VS2 access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs2_access_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      register: vs2_profile_delete_result
+      tags:
+        - policy
+        - vs2
+
+    #######################################
+    # Step 8: Delete VS2 Access Policy
+    #######################################
+    - name: Delete VS2 access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs2_access_policy.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      register: vs2_policy_delete_result
+      tags:
+        - policy
+        - vs2
+
+    #######################################
+    # Step 9: Delete VS2 Policy Items
+    #######################################
+    - name: Delete VS2 policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - "{{ vs2_policy_items.entry.name }}"
+        - "{{ vs2_policy_items.variable_assign.name }}"
+        - "{{ vs2_policy_items.deny_ending.name }}"
+        - "{{ vs2_policy_items.allow_ending.name }}"
+      tags:
+        - policy
+        - vs2
+
+    #######################################
+    # Step 10: Delete VS2 Policy Agents
+    #######################################
+    - name: Delete VS2 variable assign agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/~Common~{{ vs2_policy_agents.variable_assign.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - policy
+        - vs2
+
+    - name: Delete VS2 ending agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/{{ item.type }}/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop:
+        - name: "{{ vs2_policy_agents.deny_ending.name }}"
+          type: "ending-deny"
+        - name: "{{ vs2_policy_agents.allow_ending.name }}"
+          type: "ending-allow"
+      tags:
+        - policy
+        - vs2
+
+    #######################################
+    # Step 11: Delete VS2 Customization Groups
+    #######################################
+    - name: Delete VS2 customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      loop: "{{ vs2_customization_groups | reverse }}"
+      tags:
+        - policy
+        - vs2
+
+    #######################################
+    # Step 12: Delete Kerberos SSO Profile
+    #######################################
+    - name: Delete Kerberos SSO profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/kerberos/~Common~{{ kerberos_sso.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - kerberos
+        - sso
+
+    #######################################
+    # Step 13: Delete SAML IDP Service
+    #######################################
+    - name: Delete SAML IDP Service
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml/~Common~{{ saml_idp_service.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - saml
+
+    #######################################
+    # Step 14: Delete SAML SP Connector
+    #######################################
+    - name: Delete SAML SP Connector
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml-sp-connector/~Common~{{ saml_sp_connector.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - saml
+
+    #######################################
+    # Step 15: Delete SAML Service Provider
+    #######################################
+    - name: Delete SAML Service Provider
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/~Common~{{ saml_sp.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - saml
+
+    #######################################
+    # Step 16: Delete SAML IDP Connector (Okta)
+    #######################################
+    - name: Delete SAML IDP Connector
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/~Common~{{ saml_idp_connector.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - saml
+
+    #######################################
+    # Step 17: Delete IDP Certificate
+    #######################################
+    - name: Delete IDP certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ saml_idp_connector.certificate_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - certificates
+        - saml
+
+    #######################################
+    # Step 18: Delete SAML Signing Certificate and Key
+    #######################################
+    - name: Delete SAML signing certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ saml_signing_cert.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - certificates
+        - saml
+
+    - name: Delete SAML signing private key
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key/~Common~{{ saml_signing_cert.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - certificates
+        - saml
+
+    #######################################
+    # Step 19: Delete AD AAA Server
+    #######################################
+    - name: Delete AD AAA server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ ad_aaa_server.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - aaa
+        - ad
+
+    #######################################
+    # Step 20: Delete AD Pool
+    #######################################
+    - name: Delete AD pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ ad_pool.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404]
+        validate_certs: no
+        timeout: 60
+      tags:
+        - aaa
+        - ad
+
+    #######################################
+    # Step 21: Delete AD Node (if not used)
+    #######################################
+    - name: Delete AD node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ ad_server_ip }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        status_code: [200, 404, 400]
+        validate_certs: no
+        timeout: 60
+      register: ad_node_delete_result
+      ignore_errors: yes
+      tags:
+        - aaa
+        - ad
+
+    #######################################
+    # Final Summary
+    #######################################
+    - name: Deletion complete
+      debug:
+        msg:
+          - "======================================================"
+          - "Solution 7 deletion complete!"
+          - "======================================================"
+          - "All Solution 7 components have been removed from BIG-IP"
+          - ""
+          - "Components deleted:"
+          - "  - AS3 application tenant: {{ partition_name }}"
+          - "  - VS1 Access profile: /Common/{{ vs1_access_profile.name }}"
+          - "  - VS2 Access profile: /Common/{{ vs2_access_profile.name }}"
+          - "  - Kerberos SSO: /Common/{{ kerberos_sso.name }}"
+          - "  - SAML IDP Service: /Common/{{ saml_idp_service.name }}"
+          - "  - SAML SP: /Common/{{ saml_sp.name }}"
+          - "  - SAML IDP Connector: /Common/{{ saml_idp_connector.name }}"
+          - "  - AD AAA Server: /Common/{{ ad_aaa_server.name }}"
+          - ""
+          - "Note: AD node may still exist if used by other configurations."
+          - "======================================================"

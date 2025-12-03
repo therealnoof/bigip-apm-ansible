@@ -6,8 +6,8 @@ Detailed mapping of Postman REST API calls to Ansible tasks.
 
 | Metric | Count |
 |--------|-------|
-| Total Postman Requests | 80+ |
-| Converted to Ansible | 70+ |
+| Total Postman Requests | 100+ |
+| Converted to Ansible | 90+ |
 | Initialization/Check Requests | 6 |
 | AAA AD Configuration | 3 |
 | SAML Configuration (Solutions 3 & 4) | 8 |
@@ -16,6 +16,7 @@ Detailed mapping of Postman REST API calls to Ansible tasks.
 | Webtop | 4 |
 | Portal Resources (Solution 2) | 5 |
 | Access Policy (with transaction) | 25+ |
+| Sideband iRules (Solution 7) | 2 |
 | AS3 Deployment | 6 |
 | GSLB Configuration | 16 |
 
@@ -1647,6 +1648,293 @@ To add additional solutions:
 | Solution 4 source | `docs/solution4-create.postman_collection.json` |
 | Solution 5 source | [solution5-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution5/postman/solution5-create.postman_collection.json) |
 | Solution 6 source | [solution6-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution6/postman/solution6-create.postman_collection.json) |
+| Solution 7 playbook | `deploy_apm_sideband.yml` |
+| Solution 7 delete playbook | `delete_apm_sideband.yml` |
+| Solution 7 variables | `vars/solution7.yml` |
+| Access policy VS1 (Solution 7) | `tasks/access_policy_solution7_vs1.yml` |
+| Access policy VS2 (Solution 7) | `tasks/access_policy_solution7_vs2.yml` |
+
+---
+
+## Solution 7 Critical Implementation Details
+
+Solution 7 (SAML Authentication with Sideband Communication) implements a two-virtual-server architecture where VS1 handles SAML authentication and sends session data via sideband to VS2, which applies Kerberos SSO to backend applications.
+
+### Two Virtual Server Architecture
+
+**VS1 (Send Sideband):**
+- SAML Service Provider with Okta IDP
+- AD Query to retrieve user attributes
+- iRule Event to send sideband connection to VS2
+- Access policy flow: SAML Auth → AD Query → Variable Assign → iRule Event → Allow
+
+**VS2 (Receive Sideband):**
+- Receives TCP sideband connection from VS1
+- iRule parses username from query string
+- Variable Assign sets Kerberos domain
+- Kerberos SSO to backend applications
+- Access policy flow: Start → Variable Assign → Allow
+
+---
+
+### iRule for Send Sideband (VS1)
+
+**Ansible:**
+```yaml
+# vars/solution7.yml
+irules:
+  send_sideband:
+    name: "{{ vs1_name }}-irule"
+    content: |
+      when ACCESS_POLICY_AGENT_EVENT {
+        switch -glob [string tolower [ACCESS::policy agent_id]] {
+          "{{ vs1_name }}" {
+            # Establish TCP sideband connection to VS2
+            set conn [connect -protocol TCP -timeout 100 -idle 30 -status conn_status /{{ partition_name }}/{{ vs2_name }}/{{ vs2_name }}]
+
+            # Get username from session and send via HTTP request
+            set username [ACCESS::session data get "session.ad.last.attr.sAMAccountName"]
+            set data "GET /?username=$username HTTP/1.1\r\nHost: {{ dns1_name }}\r\nUser-Agent: Side-band\r\nclientless-mode: 1\r\n\r\n"
+            set send_info [send -timeout 3000 -status send_status $conn $data]
+
+            after 1000
+            close $conn
+          }
+        }
+      }
+```
+
+**Critical Notes:**
+- `ACCESS_POLICY_AGENT_EVENT` triggered by iRule Event agent in policy
+- `agent_id` must match the iRule Event agent's `id` field
+- Sideband connection path format: `/partition/app/virtual_server`
+- Username retrieved from AD Query result: `session.ad.last.attr.sAMAccountName`
+- `clientless-mode: 1` header required for APM session handling
+
+**File:** `vars/solution7.yml` (lines 189-210)
+
+---
+
+### iRule for Receive Sideband (VS2)
+
+**Ansible:**
+```yaml
+# vars/solution7.yml
+irules:
+  receive_sideband:
+    name: "{{ vs2_name }}-irule"
+    content: |
+      when CLIENT_ACCEPTED {
+        ACCESS::restrict_irule_events disable
+      }
+
+      when HTTP_REQUEST {
+        # Parse username from query string
+        set username [lindex [split [HTTP::query] =] 1]
+      }
+
+      when ACCESS_SESSION_STARTED {
+        # Store username in session variable
+        ACCESS::session data set session.logon.last.username $username
+      }
+```
+
+**Critical Notes:**
+- `ACCESS::restrict_irule_events disable` allows iRule to set session variables
+- Username parsed from query string format: `?username=value`
+- `ACCESS_SESSION_STARTED` event is when session variables can be set
+- `session.logon.last.username` is used by Kerberos SSO profile
+
+**File:** `vars/solution7.yml` (lines 212-229)
+
+---
+
+### AS3 Deployment with Two Applications
+
+**CRITICAL:** AS3 declaration must include both virtual servers in the same tenant.
+
+**Ansible:**
+```yaml
+# deploy_apm_sideband.yml
+- name: Build VS1 virtual server config
+  set_fact:
+    vs1_vs_config:
+      class: "Service_HTTPS"
+      virtualAddresses:
+        - "{{ as3_config.vs1_virtual_address }}"
+      virtualPort: 443
+      serverTLS: "{{ vs1_name }}-clientssl"
+      clientTLS: "{{ vs1_name }}-serverssl"
+      iRules:
+        - "{{ vs1_name }}-irule"
+      profileAccess:
+        bigip: "/Common/{{ vs1_name }}-psp"
+      pool: "{{ vs1_name }}-iis-pool"
+      snat: "auto"
+
+- name: Build VS2 virtual server config
+  set_fact:
+    vs2_vs_config:
+      class: "Service_HTTP"
+      virtualAddresses:
+        - "{{ as3_config.vs2_virtual_address }}"
+      virtualPort: 80
+      iRules:
+        - "{{ vs2_name }}-irule"
+      profileAccess:
+        bigip: "/Common/{{ vs2_name }}-psp"
+      pool: "{{ vs2_name }}-iis-pool"
+      snat: "auto"
+```
+
+**Critical Notes:**
+- VS1 uses `Service_HTTPS` with client/server TLS profiles
+- VS2 uses `Service_HTTP` (internal only, no TLS required)
+- Both virtual servers reference iRules created via AS3
+- Access profiles must exist in `/Common` before AS3 deployment
+- Uses default BIG-IP certificate (`default.crt`/`default.key`) for VS1
+
+**File:** `deploy_apm_sideband.yml` (lines 362-475)
+
+---
+
+### iRule Event Agent Configuration
+
+**Ansible:**
+```yaml
+# vars/solution7.yml
+vs1_policy_agents:
+  irule_event:
+    name: "{{ vs1_name }}-psp_act_irule_event_ag"
+    expect_data: "http"
+    id: "{{ vs1_name }}"
+```
+
+**Critical Notes:**
+- `expect_data: "http"` indicates HTTP-based sideband communication
+- `id` must match the switch case in the send-sideband iRule
+- Agent triggers `ACCESS_POLICY_AGENT_EVENT` in iRule
+
+**File:** `vars/solution7.yml` (lines 269-272)
+
+---
+
+### Sideband Connection Path Format
+
+**CRITICAL:** The sideband connection path must use the correct format to reach VS2.
+
+**Format:** `/partition/application/virtual_server`
+
+**Example:**
+```tcl
+set conn [connect -protocol TCP -timeout 100 -idle 30 -status conn_status /solution7/receive-sideband/receive-sideband]
+```
+
+**Components:**
+- `/solution7` - AS3 tenant/partition name
+- `/receive-sideband` - AS3 application name (matches `vs2_name`)
+- `/receive-sideband` - Virtual server name within application
+
+**Common Error:**
+If path is incorrect, sideband connection fails with no error in policy (silent failure).
+
+**File:** `vars/solution7.yml` (line 197)
+
+---
+
+### Kerberos SSO Profile for VS2
+
+**Ansible:**
+```yaml
+# vars/solution7.yml
+kerberos_sso:
+  name: "{{ vs2_name }}-sso"
+  account_name: "HOST/{{ vs2_name }}.f5lab.local"
+  account_password: "{{ vs2_name }}"
+  realm: "F5LAB.LOCAL"
+  send_authorization: "401"
+  spn_pattern: "HTTP/{{ dns1_name }}"
+  username_source: "session.logon.last.username"
+  user_realm_source: "session.logon.last.domain"
+```
+
+**Critical Notes:**
+- `account_name` is the Kerberos service account (must exist in AD)
+- `realm` must be uppercase (Kerberos convention)
+- `spn_pattern` defines how SPN is constructed for backend
+- `username_source` reads from session variable set by VS2 iRule
+- `user_realm_source` reads from session variable set by VS2 policy
+
+**File:** `vars/solution7.yml` (lines 174-186)
+
+---
+
+### Variable Assign for Domain (VS2)
+
+**Ansible:**
+```yaml
+# vars/solution7.yml
+vs2_policy_agents:
+  variable_assign:
+    name: "{{ vs2_name }}-psp_act_variable_assign_1_ag"
+    type: "general"
+    variables:
+      - append: "false"
+        expression: "return {F5LAB.LOCAL}"
+        secure: "false"
+        varname: "session.logon.last.domain"
+```
+
+**Critical Notes:**
+- Sets the Kerberos domain for SSO
+- `return {value}` syntax for literal values in TCL
+- Domain should match `kerberos_sso.realm` (uppercase)
+- This runs AFTER iRule sets `session.logon.last.username`
+
+**File:** `vars/solution7.yml` (lines 494-501)
+
+---
+
+### Transaction Handling for Two Policies
+
+**CRITICAL:** Each access policy requires its own transaction.
+
+**Ansible:**
+```yaml
+# tasks/access_policy_solution7_vs1.yml
+- name: Create transaction for VS1 policy configuration
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    body: {}
+  register: transaction_result
+
+- name: Set transaction ID
+  set_fact:
+    trans_id: "{{ transaction_result.json.transId }}"
+```
+
+**Critical Notes:**
+- VS1 and VS2 policies use separate transactions
+- Transaction ID must be included in all policy-related API calls
+- Commit transaction with `state: "VALIDATING"`
+- Apply policy with `generationAction: "increment"` after commit
+
+**Files:**
+- `tasks/access_policy_solution7_vs1.yml` (lines 5-24)
+- `tasks/access_policy_solution7_vs2.yml` (lines 5-24)
+
+---
+
+### File Location Reference (Solution 7)
+
+| Component | File Path |
+|-----------|-----------|
+| Solution 7 playbook | `deploy_apm_sideband.yml` |
+| Solution 7 delete playbook | `delete_apm_sideband.yml` |
+| Solution 7 variables | `vars/solution7.yml` |
+| VS1 access policy | `tasks/access_policy_solution7_vs1.yml` |
+| VS2 access policy | `tasks/access_policy_solution7_vs2.yml` |
 
 ---
 

@@ -1,0 +1,567 @@
+---
+# Solution 7: Deploy SAML Authentication with Sideband Communication
+# This playbook deploys a complete APM solution with:
+# - VS1 (send-sideband): SAML SP with Okta IDP, AD Query, iRule Event for sideband
+# - VS2 (receive-sideband): Receives sideband session data, Kerberos SSO to backend
+# - Two virtual servers with coordinated access policies
+# - AS3 application deployment with iRules
+
+- name: Deploy APM Solution 7 - SAML Authentication with Sideband Communication
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution7.yml
+
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg:
+          - "Deploying Solution 7: SAML Authentication with Sideband Communication"
+          - "VS1 (Send Sideband): {{ vs1_name }}"
+          - "VS2 (Receive Sideband): {{ vs2_name }}"
+          - "DNS Name: {{ dns1_name }}"
+          - "Partition: {{ partition_name }}"
+          - "BIG-IP: {{ bigip_mgmt }}"
+
+    #######################################
+    # Step 1: Create AD Server Node and Pool
+    #######################################
+    - name: Create AD server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ ad_server_ip }}"
+          address: "{{ ad_server_ip }}"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: ad_node_result
+      tags:
+        - aaa
+        - ad
+
+    - name: Create AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ ad_pool.name }}"
+          members: "{{ ad_pool.members }}"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: ad_pool_result
+      tags:
+        - aaa
+        - ad
+
+    - name: Create APM AAA Active Directory server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ ad_aaa_server.name }}"
+          adminEncryptedPassword: "{{ ad_aaa_server.admin_password }}"
+          adminName: "{{ ad_aaa_server.admin_name }}"
+          cleanupCache: "{{ ad_aaa_server.cleanup_cache }}"
+          domain: "{{ ad_aaa_server.domain }}"
+          groupCacheTtl: "{{ ad_aaa_server.group_cache_ttl }}"
+          kdcLockoutDuration: "{{ ad_aaa_server.kdc_lockout_duration }}"
+          locationSpecific: "{{ ad_aaa_server.location_specific }}"
+          padata: "{{ ad_aaa_server.padata }}"
+          pool: "{{ ad_aaa_server.pool }}"
+          psoCacheTtl: "{{ ad_aaa_server.pso_cache_ttl }}"
+          timeout: "{{ ad_aaa_server.timeout }}"
+          usePool: "{{ ad_aaa_server.use_pool }}"
+          domainControllers: "{{ ad_aaa_server.domain_controllers }}"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: ad_aaa_result
+      tags:
+        - aaa
+        - ad
+
+    #######################################
+    # Step 2: Upload and Install IDP Certificate (Okta)
+    #######################################
+    - name: Prepare IDP certificate content
+      set_fact:
+        idp_cert_content: "{{ saml_idp_connector.certificate_content | trim }}"
+        idp_cert_length: "{{ saml_idp_connector.certificate_content | trim | length }}"
+
+    - name: Upload IDP certificate file to BIG-IP
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}.crt"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body: "{{ idp_cert_content }}"
+        headers:
+          Content-Type: "application/octet-stream"
+          Content-Range: "0-{{ idp_cert_length | int - 1 }}/{{ idp_cert_length }}"
+        status_code: [200, 201]
+        validate_certs: no
+        timeout: 60
+      register: cert_upload_result
+      tags:
+        - certificates
+        - saml
+
+    - name: Install IDP certificate on BIG-IP
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          command: "install"
+          name: "{{ saml_idp_connector.certificate_name }}"
+          from-local-file: "/var/config/rest/downloads/{{ vs1_name }}.crt"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: cert_install_result
+      tags:
+        - certificates
+        - saml
+
+    #######################################
+    # Step 3: Create Self-Signed Certificate for SAML Signing
+    #######################################
+    - name: Create self-signed certificate for SAML signing
+      include_tasks: tasks/create_self_signed_cert.yml
+      tags:
+        - certificates
+        - saml
+
+    #######################################
+    # Step 4: Create SAML IDP Connector (Okta)
+    #######################################
+    - name: Create SAML IDP Connector (Okta)
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ saml_idp_connector.name }}"
+          partition: "Common"
+          artifactResolutionServiceAddr: "{{ saml_idp_connector.artifact_resolution_service_addr }}"
+          artifactResolutionServicePort: "{{ saml_idp_connector.artifact_resolution_service_port }}"
+          entityId: "{{ saml_idp_connector.entity_id }}"
+          identityLocation: "{{ saml_idp_connector.identity_location }}"
+          idpCertificate: "{{ saml_idp_connector.certificate_name }}"
+          locationSpecific: "{{ saml_idp_connector.location_specific }}"
+          signArtifactResolutionRq: "{{ saml_idp_connector.sign_artifact_resolution_rq }}"
+          signatureType: "{{ saml_idp_connector.signature_type }}"
+          singleLogoutBinding: "{{ saml_idp_connector.slo_binding }}"
+          ssoBinding: "{{ saml_idp_connector.sso_binding }}"
+          ssoUri: "{{ saml_idp_connector.sso_uri }}"
+          wantAuthnRequestSigned: "{{ saml_idp_connector.want_authn_request_signed }}"
+          wantDetachedSignature: "{{ saml_idp_connector.want_detached_signature }}"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: idp_connector_result
+      tags:
+        - saml
+
+    #######################################
+    # Step 5: Create SAML Service Provider
+    #######################################
+    - name: Create SAML Service Provider
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ saml_sp.name }}"
+          partition: "Common"
+          assertionConsumerBinding: "{{ saml_sp.assertion_consumer_binding }}"
+          authContextComparisonMethod: "{{ saml_sp.auth_context_comparison_method }}"
+          entityId: "{{ saml_sp.entity_id }}"
+          forceAuthn: "{{ saml_sp.force_authn }}"
+          isAuthnRequestSigned: "{{ saml_sp.is_authn_request_signed }}"
+          locationSpecific: "{{ saml_sp.location_specific }}"
+          nameIdPolicyAllowCreate: "{{ saml_sp.name_id_policy_allow_create }}"
+          spHost: "{{ saml_sp.sp_host }}"
+          spScheme: "{{ saml_sp.sp_scheme }}"
+          wantAssertionEncrypted: "{{ saml_sp.want_assertion_encrypted }}"
+          wantAssertionSigned: "{{ saml_sp.want_assertion_signed }}"
+          idpConnectors:
+            - name: "{{ saml_idp_connector.name }}"
+              partition: "Common"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: sp_result
+      tags:
+        - saml
+
+    #######################################
+    # Step 6: Create SAML SP Connector (for IDP Service)
+    #######################################
+    - name: Create SAML SP Connector
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml-sp-connector/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ saml_sp_connector.name }}"
+          partition: "Common"
+          encryptionType: "{{ saml_sp_connector.encryption_type }}"
+          entityId: "{{ saml_sp_connector.entity_id }}"
+          isAuthnRequestSigned: "{{ saml_sp_connector.is_authn_request_signed }}"
+          locationSpecific: "{{ saml_sp_connector.location_specific }}"
+          signatureType: "{{ saml_sp_connector.signature_algorithm }}"
+          singleLogoutBinding: "{{ saml_sp_connector.slo_binding }}"
+          singleLogoutResponseUri: "{{ saml_sp_connector.slo_response_uri }}"
+          singleLogoutUri: "{{ saml_sp_connector.slo_uri }}"
+          singleLogoutUriHost: "{{ saml_sp_connector.slo_uri_host }}"
+          singleLogoutUriPath: "{{ saml_sp_connector.slo_uri_path }}"
+          spCertificate: "{{ saml_sp_connector.sp_certificate }}"
+          spLocation: "{{ saml_sp_connector.sp_location }}"
+          wantAssertionEncrypted: "{{ saml_sp_connector.want_assertion_encrypted }}"
+          wantAssertionSigned: "{{ saml_sp_connector.want_assertion_signed }}"
+          wantResponseSigned: "{{ saml_sp_connector.want_response_signed }}"
+          assertionConsumerServices:
+            - binding: "{{ saml_sp_connector.acs_binding }}"
+              index: "{{ saml_sp_connector.acs_index }}"
+              isDefault: "{{ saml_sp_connector.acs_is_default }}"
+              uri: "{{ saml_sp_connector.acs_uri }}"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: sp_connector_result
+      tags:
+        - saml
+
+    #######################################
+    # Step 7: Create SAML IDP Service
+    #######################################
+    - name: Create SAML IDP Service
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/saml/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ saml_idp_service.name }}"
+          partition: "Common"
+          assertionValidity: "{{ saml_idp_service.assertion_validity }}"
+          authContextMethod: "{{ saml_idp_service.auth_context_method }}"
+          encryptSubject: "{{ saml_idp_service.encrypt_subject }}"
+          encryptionTypeSubject: "{{ saml_idp_service.encryption_type_subject }}"
+          entityId: "{{ saml_idp_service.entity_id }}"
+          idpCertificate: "{{ saml_idp_service.idp_certificate }}"
+          idpHost: "{{ saml_idp_service.idp_host }}"
+          idpScheme: "{{ saml_idp_service.idp_scheme }}"
+          idpSignkey: "{{ saml_idp_service.idp_sign_key }}"
+          keyTransportAlgorithm: "{{ saml_idp_service.key_transport_algorithm }}"
+          locationSpecific: "{{ saml_idp_service.location_specific }}"
+          logLevel: "{{ saml_idp_service.log_level }}"
+          samlProfiles: "{{ saml_idp_service.saml_profiles }}"
+          subjectType: "{{ saml_idp_service.subject_type }}"
+          subjectValue: "{{ saml_idp_service.subject_value }}"
+          spConnectors:
+            - "{{ saml_idp_service.sp_connector }}"
+          attributes: []
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: idp_service_result
+      tags:
+        - saml
+
+    #######################################
+    # Step 8: Create Kerberos SSO Profile (for VS2)
+    #######################################
+    - name: Create Kerberos SSO profile for VS2
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/sso/kerberos/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        body_format: json
+        body:
+          name: "{{ kerberos_sso.name }}"
+          partition: "Common"
+          accountName: "{{ kerberos_sso.account_name }}"
+          accountPassword: "{{ kerberos_sso.account_password }}"
+          locationSpecific: "{{ kerberos_sso.location_specific }}"
+          realm: "{{ kerberos_sso.realm }}"
+          sendAuthorization: "{{ kerberos_sso.send_authorization }}"
+          spnPattern: "{{ kerberos_sso.spn_pattern }}"
+          ticketLifetime: "{{ kerberos_sso.ticket_lifetime }}"
+          upnSupport: "{{ kerberos_sso.upn_support }}"
+          userRealmSource: "{{ kerberos_sso.user_realm_source }}"
+          usernameSource: "{{ kerberos_sso.username_source }}"
+        status_code: [200, 201, 409]
+        validate_certs: no
+        timeout: 60
+      register: kerberos_sso_result
+      tags:
+        - kerberos
+        - sso
+
+    #######################################
+    # Step 9: Create Access Policy for VS1 (Send Sideband)
+    #######################################
+    - name: Create VS1 access policy (Send Sideband)
+      include_tasks: tasks/access_policy_solution7_vs1.yml
+      tags:
+        - policy
+        - vs1
+
+    #######################################
+    # Step 10: Create Access Policy for VS2 (Receive Sideband)
+    #######################################
+    - name: Create VS2 access policy (Receive Sideband)
+      include_tasks: tasks/access_policy_solution7_vs2.yml
+      tags:
+        - policy
+        - vs2
+
+    #######################################
+    # Step 11: Deploy Application via AS3
+    #######################################
+    - name: Deploy application using AS3
+      when: deploy_application_via_as3 | default(true) | bool
+      block:
+        # Build VS1 pool members
+        - name: Prepare VS1 pool members
+          set_fact:
+            vs1_pool_members_list: "{{ as3_config.vs1_pool_members | map('regex_replace', '^(.+):([0-9]+)$', '{\"serverAddresses\": [\"\\1\"], \"servicePort\": \\2}') | map('from_json') | list }}"
+
+        # Build VS2 pool members
+        - name: Prepare VS2 pool members
+          set_fact:
+            vs2_pool_members_list: "{{ as3_config.vs2_pool_members | map('regex_replace', '^(.+):([0-9]+)$', '{\"serverAddresses\": [\"\\1\"], \"servicePort\": \\2}') | map('from_json') | list }}"
+
+        # Build VS1 Application
+        - name: Build VS1 application configuration
+          set_fact:
+            vs1_app_config:
+              class: "Application"
+              template: "generic"
+
+        - name: Build VS1 virtual server config
+          set_fact:
+            vs1_vs_config:
+              class: "Service_HTTPS"
+              virtualAddresses:
+                - "{{ as3_config.vs1_virtual_address }}"
+              virtualPort: 443
+              serverTLS: "{{ vs1_name }}-clientssl"
+              clientTLS: "{{ vs1_name }}-serverssl"
+              iRules:
+                - "{{ vs1_name }}-irule"
+              profileAccess:
+                bigip: "/Common/{{ vs1_name }}-psp"
+              pool: "{{ vs1_name }}-iis-pool"
+              snat: "{{ as3_config.snat }}"
+
+        - name: Add VS1 virtual server to application
+          set_fact:
+            vs1_app_config: "{{ vs1_app_config | combine({vs1_name: vs1_vs_config}) }}"
+
+        - name: Add VS1 TLS server profile
+          set_fact:
+            vs1_app_config: "{{ vs1_app_config | combine({vs1_name + '-clientssl': vs1_tls_server}) }}"
+          vars:
+            vs1_tls_server:
+              class: "TLS_Server"
+              certificates:
+                - certificate: "tlsserver_local_cert"
+
+        - name: Add VS1 certificate
+          set_fact:
+            vs1_app_config: "{{ vs1_app_config | combine({'tlsserver_local_cert': vs1_cert}) }}"
+          vars:
+            vs1_cert:
+              class: "Certificate"
+              certificate:
+                bigip: "/Common/{{ as3_config.tls_cert_name }}"
+              privateKey:
+                bigip: "/Common/{{ as3_config.tls_key_name }}"
+
+        - name: Add VS1 TLS client profile
+          set_fact:
+            vs1_app_config: "{{ vs1_app_config | combine({vs1_name + '-serverssl': vs1_tls_client}) }}"
+          vars:
+            vs1_tls_client:
+              class: "TLS_Client"
+
+        - name: Add VS1 iRule
+          set_fact:
+            vs1_app_config: "{{ vs1_app_config | combine({vs1_name + '-irule': vs1_irule}) }}"
+          vars:
+            vs1_irule:
+              class: "iRule"
+              iRule: "{{ irules.send_sideband.content }}"
+
+        - name: Add VS1 pool
+          set_fact:
+            vs1_app_config: "{{ vs1_app_config | combine({vs1_name + '-iis-pool': vs1_pool}) }}"
+          vars:
+            vs1_pool:
+              class: "Pool"
+              monitors:
+                - "{{ as3_config.vs1_pool_monitor }}"
+              members: "{{ vs1_pool_members_list }}"
+
+        # Build VS2 Application
+        - name: Build VS2 application configuration
+          set_fact:
+            vs2_app_config:
+              class: "Application"
+              template: "generic"
+
+        - name: Build VS2 virtual server config
+          set_fact:
+            vs2_vs_config:
+              class: "Service_HTTP"
+              virtualAddresses:
+                - "{{ as3_config.vs2_virtual_address }}"
+              virtualPort: 80
+              iRules:
+                - "{{ vs2_name }}-irule"
+              profileAccess:
+                bigip: "/Common/{{ vs2_name }}-psp"
+              pool: "{{ vs2_name }}-iis-pool"
+              snat: "{{ as3_config.snat }}"
+
+        - name: Add VS2 virtual server to application
+          set_fact:
+            vs2_app_config: "{{ vs2_app_config | combine({vs2_name: vs2_vs_config}) }}"
+
+        - name: Add VS2 iRule
+          set_fact:
+            vs2_app_config: "{{ vs2_app_config | combine({vs2_name + '-irule': vs2_irule}) }}"
+          vars:
+            vs2_irule:
+              class: "iRule"
+              iRule: "{{ irules.receive_sideband.content }}"
+
+        - name: Add VS2 pool
+          set_fact:
+            vs2_app_config: "{{ vs2_app_config | combine({vs2_name + '-iis-pool': vs2_pool}) }}"
+          vars:
+            vs2_pool:
+              class: "Pool"
+              monitors:
+                - "{{ as3_config.vs2_pool_monitor }}"
+              members: "{{ vs2_pool_members_list }}"
+
+        # Build Tenant
+        - name: Build tenant configuration
+          set_fact:
+            tenant_config:
+              class: "Tenant"
+
+        - name: Add VS1 application to tenant
+          set_fact:
+            tenant_config: "{{ tenant_config | combine({vs1_name: vs1_app_config}) }}"
+
+        - name: Add VS2 application to tenant
+          set_fact:
+            tenant_config: "{{ tenant_config | combine({vs2_name: vs2_app_config}) }}"
+
+        # Build Declaration
+        - name: Build declaration
+          set_fact:
+            declaration_config:
+              class: "ADC"
+              schemaVersion: "3.14.0"
+              id: "APM"
+
+        - name: Add tenant to declaration
+          set_fact:
+            declaration_config: "{{ declaration_config | combine({partition_name: tenant_config}) }}"
+
+        - name: Prepare final AS3 declaration
+          set_fact:
+            as3_declaration:
+              class: "AS3"
+              action: "deploy"
+              persist: true
+              declaration: "{{ declaration_config }}"
+
+        - name: Create AS3 declaration for Solution 7
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            body_format: json
+            body: "{{ as3_declaration }}"
+            status_code: [200, 201]
+            validate_certs: no
+            timeout: 120
+          register: as3_result
+
+        - name: Display AS3 deployment result
+          debug:
+            msg: "AS3 application deployed: {{ as3_result.status }}"
+      tags:
+        - application
+        - as3
+
+    #######################################
+    # Final Summary
+    #######################################
+    - name: Deployment complete
+      debug:
+        msg:
+          - "======================================================"
+          - "Solution 7 deployment complete!"
+          - "======================================================"
+          - "VS1 (Send Sideband): https://{{ as3_config.vs1_virtual_address }}"
+          - "  - DNS Name: https://{{ dns1_name }}"
+          - "  - Access Profile: /Common/{{ vs1_name }}-psp"
+          - "  - SAML IDP Service: /Common/{{ vs1_name }}-sso"
+          - ""
+          - "VS2 (Receive Sideband): http://{{ as3_config.vs2_virtual_address }}"
+          - "  - Access Profile: /Common/{{ vs2_name }}-psp"
+          - "  - Kerberos SSO: /Common/{{ vs2_name }}-sso"
+          - ""
+          - "Authentication Flow:"
+          - "  VS1:"
+          - "    1. User accesses {{ dns1_name }}"
+          - "    2. SAML authentication with Okta"
+          - "    3. AD Query to retrieve sAMAccountName"
+          - "    4. Variable assign to set username"
+          - "    5. iRule Event sends sideband to VS2"
+          - ""
+          - "  VS2:"
+          - "    1. Receives sideband connection from VS1"
+          - "    2. iRule parses username from query string"
+          - "    3. Variable assign sets domain (F5LAB.LOCAL)"
+          - "    4. Kerberos SSO to backend application"
+          - ""
+          - "Prerequisites:"
+          - "  - Okta application configured with Entity ID"
+          - "  - acme.com-wildcard certificate exists on BIG-IP"
+          - "  - AD server accessible at {{ ad_server_ip }}"
+          - "  - Kerberos delegation configured for {{ kerberos_sso.account_name }}"
+          - "======================================================"

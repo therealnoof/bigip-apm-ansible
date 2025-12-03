@@ -1,0 +1,319 @@
+---
+# Create Access Policy for Solution 7 VS2 - Receive Sideband
+# Start -> Variable Assign (set domain) -> Allow
+
+- name: Create transaction for VS2 policy configuration
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body: {}
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: transaction_result
+
+- name: Set transaction ID
+  set_fact:
+    trans_id: "{{ transaction_result.json.transId }}"
+
+- name: Display transaction ID
+  debug:
+    msg: "VS2 Transaction ID: {{ trans_id }}"
+
+# Customization Groups
+- name: Create VS2 customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  loop: "{{ vs2_customization_groups }}"
+  register: customization_groups_result
+
+# Policy Agents
+
+- name: Create VS2 allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_agents.allow_ending.name }}"
+      partition: "Common"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: allow_ending_result
+
+- name: Create VS2 deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_agents.deny_ending.name }}"
+      partition: "Common"
+      customizationGroup: "{{ vs2_policy_agents.deny_ending.customization_group }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: deny_ending_result
+
+- name: Create VS2 variable assign agent (set domain)
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_agents.variable_assign.name }}"
+      partition: "Common"
+      type: "{{ vs2_policy_agents.variable_assign.type }}"
+      variables: "{{ vs2_policy_agents.variable_assign.variables }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: variable_assign_result
+
+# Policy Items
+
+- name: Create VS2 allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_items.allow_ending.name }}"
+      partition: "Common"
+      caption: "{{ vs2_policy_items.allow_ending.caption }}"
+      color: "{{ vs2_policy_items.allow_ending.color }}"
+      itemType: "{{ vs2_policy_items.allow_ending.item_type }}"
+      agents:
+        - name: "{{ vs2_policy_agents.allow_ending.name }}"
+          partition: "Common"
+          type: "{{ vs2_policy_items.allow_ending.agent_type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: allow_ending_item_result
+
+- name: Create VS2 deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_items.deny_ending.name }}"
+      partition: "Common"
+      caption: "{{ vs2_policy_items.deny_ending.caption }}"
+      color: "{{ vs2_policy_items.deny_ending.color }}"
+      itemType: "{{ vs2_policy_items.deny_ending.item_type }}"
+      agents:
+        - name: "{{ vs2_policy_agents.deny_ending.name }}"
+          partition: "Common"
+          type: "{{ vs2_policy_items.deny_ending.agent_type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: deny_ending_item_result
+
+- name: Create VS2 variable assign policy item (set domain)
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_items.variable_assign.name }}"
+      partition: "Common"
+      caption: "{{ vs2_policy_items.variable_assign.caption }}"
+      color: "{{ vs2_policy_items.variable_assign.color }}"
+      itemType: "{{ vs2_policy_items.variable_assign.item_type }}"
+      loop: "{{ vs2_policy_items.variable_assign.loop }}"
+      agents:
+        - name: "{{ vs2_policy_agents.variable_assign.name }}"
+          partition: "Common"
+          type: "{{ vs2_policy_items.variable_assign.agent_type }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ vs2_policy_items.variable_assign.nextItem }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: variable_assign_item_result
+
+- name: Create VS2 entry point policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_policy_items.entry.name }}"
+      partition: "Common"
+      caption: "{{ vs2_policy_items.entry.caption }}"
+      color: "{{ vs2_policy_items.entry.color }}"
+      itemType: "{{ vs2_policy_items.entry.item_type }}"
+      loop: "{{ vs2_policy_items.entry.loop }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ vs2_policy_items.entry.nextItem }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: entry_item_result
+
+# Create Access Policy
+
+- name: Prepare VS2 access policy body
+  set_fact:
+    vs2_access_policy_body:
+      name: "{{ vs2_access_policy.name }}"
+      partition: "Common"
+      defaultEnding: "{{ vs2_access_policy.default_ending }}"
+      maxMacroLoopCount: "{{ vs2_access_policy.max_macro_loop_count }}"
+      oneshotMacro: "{{ vs2_access_policy.oneshot_macro }}"
+      startItem: "{{ vs2_access_policy.start_item }}"
+      type: "{{ vs2_access_policy.type }}"
+      items: "{{ vs2_access_policy.policy_items }}"
+
+- name: Create VS2 access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body: "{{ vs2_access_policy_body }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: access_policy_result
+
+# Create Access Profile
+
+- name: Create VS2 access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs2_access_profile.name }}"
+      partition: "Common"
+      acceptLanguages: "{{ vs2_access_profile.accept_languages }}"
+      accessPolicy: "{{ vs2_access_profile.access_policy }}"
+      customizationGroup: "{{ vs2_access_profile.customization_group }}"
+      epsGroup: "{{ vs2_access_profile.eps_group }}"
+      errormapGroup: "{{ vs2_access_profile.errormap_group }}"
+      frameworkInstallationGroup: "{{ vs2_access_profile.framework_installation_group }}"
+      generalUiGroup: "{{ vs2_access_profile.general_ui_group }}"
+      ssoName: "{{ vs2_access_profile.sso_name }}"
+      accessPolicyTimeout: "{{ vs2_access_profile.access_policy_timeout }}"
+      defaultLanguage: "{{ vs2_access_profile.default_language }}"
+      httponlyCookie: "{{ vs2_access_profile.httponly_cookie }}"
+      inactivityTimeout: "{{ vs2_access_profile.inactivity_timeout }}"
+      logoutUriTimeout: "{{ vs2_access_profile.logout_uri_timeout }}"
+      maxConcurrentSessions: "{{ vs2_access_profile.max_concurrent_sessions }}"
+      maxConcurrentUsers: "{{ vs2_access_profile.max_concurrent_users }}"
+      maxFailureDelay: "{{ vs2_access_profile.max_failure_delay }}"
+      maxInProgressSessions: "{{ vs2_access_profile.max_in_progress_sessions }}"
+      maxSessionTimeout: "{{ vs2_access_profile.max_session_timeout }}"
+      minFailureDelay: "{{ vs2_access_profile.min_failure_delay }}"
+      modifiedSinceLastPolicySync: "{{ vs2_access_profile.modified_since_last_policy_sync }}"
+      persistentCookie: "{{ vs2_access_profile.persistent_cookie }}"
+      restrictToSingleClientIp: "{{ vs2_access_profile.restrict_to_single_client_ip }}"
+      scope: "{{ vs2_access_profile.scope }}"
+      secureCookie: "{{ vs2_access_profile.secure_cookie }}"
+      type: "{{ vs2_access_profile.type }}"
+      useHttp_503OnError: "{{ vs2_access_profile.use_http_503_on_error }}"
+      userIdentityMethod: "{{ vs2_access_profile.user_identity_method }}"
+      logSettings: "{{ vs2_access_profile.log_settings }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: access_profile_result
+
+# Commit Transaction
+
+- name: Commit VS2 transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: commit_result
+
+- name: Display VS2 transaction commit result
+  debug:
+    msg: "VS2 Transaction committed: {{ commit_result.status }}"
+
+# Apply Policy
+
+- name: Apply VS2 access policy (increment generation)
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs2_access_profile.name }}"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: apply_policy_result
+
+- name: Display VS2 policy apply result
+  debug:
+    msg: "VS2 Access policy applied: {{ apply_policy_result.status }}"

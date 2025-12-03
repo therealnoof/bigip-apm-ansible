@@ -80,6 +80,24 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution6-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution6/postman/solution6-create.postman_collection.json)
 
+### Solution 7: SAML Authentication with Sideband Communication
+- **Two Virtual Servers** - Coordinated VS1 (send-sideband) and VS2 (receive-sideband)
+- **SAML Authentication** - VS1 acts as SAML SP with Okta IDP integration
+- **Active Directory Query** - Retrieve user attributes (sAMAccountName) after SAML auth
+- **Sideband Communication** - iRule-based session data transfer between virtual servers
+- **Kerberos SSO** - VS2 provides Kerberos SSO to backend applications
+- **Access Policies** - Separate policies for each virtual server with coordinated flow
+- **Application Deployment** - AS3-based deployment with two applications and iRules
+
+**Use Case:** Scenarios requiring SAML authentication at the front-end with Kerberos SSO to legacy backend applications. The sideband mechanism allows session data (username) to be securely passed between virtual servers, enabling seamless authentication translation from SAML to Kerberos.
+
+**Authentication Flow:**
+1. User accesses VS1 (SAML SP) → Redirected to Okta for authentication
+2. After SAML auth, AD Query retrieves sAMAccountName
+3. iRule Event sends username via sideband TCP connection to VS2
+4. VS2 receives username, sets session variables, applies Kerberos SSO
+5. Backend application receives Kerberos ticket (seamless SSO)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -465,6 +483,29 @@ User → https://solution6.acme.com (Client Cert Required)
    └─► 7. Kerberos SSO to backend → Backend IIS/App Server
 ```
 
+### Solution 7: SAML with Sideband Communication Flow
+
+```
+User → https://sp.acme.com (VS1 - Send Sideband)
+   │
+   ├─ 1. SAML Auth: Redirect to Okta IDP
+   ├─ 2. User authenticates at Okta
+   ├─ 3. SAML assertion returned to VS1
+   ├─ 4. AD Query: Retrieve sAMAccountName
+   ├─ 5. Variable Assign: Set username
+   ├─ 6. iRule Event: Send sideband to VS2
+   │         │
+   │         ▼ (TCP Sideband Connection)
+   │   ┌─────────────────────────────────┐
+   │   │ VS2 (Receive Sideband)          │
+   │   │  - iRule parses username        │
+   │   │  - Variable Assign: Set domain  │
+   │   │  - Kerberos SSO applied         │
+   │   └─────────────────────────────────┘
+   │
+   └─► Backend Application (with Kerberos ticket)
+```
+
 **Authentication Flow:**
 1. User accesses `https://solution6.acme.com`
 2. BIG-IP requests client certificate (on-demand, not required at TLS layer)
@@ -565,12 +606,14 @@ bigip-apm-ansible/
 ├── deploy_apm_saml_idp.yml           # Solution 4: SAML IDP deployment playbook
 ├── deploy_apm_saml_sp_internal.yml   # Solution 5: SAML SP with internal IDP
 ├── deploy_apm_cert_kerb.yml          # Solution 6: Certificate + Kerberos SSO
+├── deploy_apm_sideband.yml           # Solution 7: SAML with Sideband Communication
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
 ├── delete_apm_saml_idp.yml           # Solution 4: Interactive deletion playbook
 ├── delete_apm_saml_sp_internal.yml   # Solution 5: Interactive deletion playbook
 ├── delete_apm_cert_kerb.yml          # Solution 6: Interactive deletion playbook
+├── delete_apm_sideband.yml           # Solution 7: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
@@ -582,7 +625,8 @@ bigip-apm-ansible/
 │   ├── solution3.yml                 # Solution 3 variables (SAML SP)
 │   ├── solution4.yml                 # Solution 4 variables (SAML IDP)
 │   ├── solution5.yml                 # Solution 5 variables (SAML SP internal)
-│   └── solution6.yml                 # Solution 6 variables (Certificate + Kerberos)
+│   ├── solution6.yml                 # Solution 6 variables (Certificate + Kerberos)
+│   └── solution7.yml                 # Solution 7 variables (SAML + Sideband)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -601,6 +645,8 @@ bigip-apm-ansible/
 │   ├── access_policy_solution4.yml    # Solution 4 policy with AD + SAML IDP
 │   ├── access_policy_solution5.yml    # Solution 5 policy with SAML auth
 │   ├── access_policy_solution6.yml    # Solution 6 policy with cert auth
+│   ├── access_policy_solution7_vs1.yml # Solution 7 VS1 policy (send sideband)
+│   ├── access_policy_solution7_vs2.yml # Solution 7 VS2 policy (receive sideband)
 │   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
 │   ├── import_ca_certificate.yml      # CA certificate import (Solution 6)
 │   ├── kerberos_sso.yml               # Kerberos SSO profile (Solution 6)
@@ -973,6 +1019,79 @@ ansible-playbook deploy_apm_cert_kerb.yml --tags application
 7. Kerberos ticket requested for backend SPN
 8. Access granted with seamless SSO to backend
 
+### Solution 7: SAML Authentication with Sideband Communication
+
+Deploy the SAML with Sideband solution for SAML-to-Kerberos authentication translation:
+
+```bash
+ansible-playbook deploy_apm_sideband.yml
+```
+
+**What Gets Deployed:**
+- **VS1 (Send Sideband):**
+  - SAML Service Provider with Okta IDP
+  - Active Directory AAA server and pool
+  - SAML IDP connector (Okta certificate)
+  - Self-signed certificate for SAML signing
+  - SAML SP connector and IDP service
+  - Access policy: SAML Auth → AD Query → Variable Assign → iRule Event → Allow
+  - iRule for sending sideband TCP connection to VS2
+
+- **VS2 (Receive Sideband):**
+  - Kerberos SSO profile
+  - Access policy: Start → Variable Assign (set domain) → Allow
+  - iRule for receiving sideband and parsing username
+  - HTTP virtual server (internal only)
+
+- **AS3 Application:**
+  - Two applications in one tenant
+  - HTTPS virtual server for VS1
+  - HTTP virtual server for VS2
+  - Pool configurations for backend servers
+
+**Configuration Variables** (vars/solution7.yml):
+```yaml
+# Virtual Server Names
+vs1_name: "send-sideband"
+vs2_name: "receive-sideband"
+dns1_name: "sp.acme.com"
+
+# Partition
+partition_name: "solution7"
+
+# Active Directory
+ad_server_ip: "10.1.20.7"
+ad_domain: "f5lab.local"
+
+# Kerberos SSO
+kerberos_sso:
+  realm: "F5LAB.LOCAL"
+  account_name: "HOST/receive-sideband.f5lab.local"
+
+# AS3 Virtual Addresses
+as3_config:
+  vs1_virtual_address: "10.1.10.170"
+  vs2_virtual_address: "192.168.0.1"
+```
+
+**Deploy Specific Components (Tags):**
+```bash
+# Deploy only AAA/AD configuration
+ansible-playbook deploy_apm_sideband.yml --tags aaa,ad
+
+# Deploy only SAML configuration
+ansible-playbook deploy_apm_sideband.yml --tags saml
+
+# Deploy only Kerberos SSO
+ansible-playbook deploy_apm_sideband.yml --tags kerberos,sso
+
+# Deploy only access policies
+ansible-playbook deploy_apm_sideband.yml --tags policy
+
+# Deploy only AS3 application
+ansible-playbook deploy_apm_sideband.yml --tags application,as3
+```
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -1114,6 +1233,29 @@ ansible-playbook delete_apm_cert_kerb.yml
 - GSLB configuration (if deployed)
 
 **Note:** CA certificate and LDAP node are only deleted if not in use by other configurations.
+
+### Remove Solution 7 (SAML with Sideband)
+
+To remove Solution 7 deployment:
+
+```bash
+ansible-playbook delete_apm_sideband.yml
+```
+
+**Deletes:**
+- AS3 application tenant (solution7)
+- VS1 Access profile and access policy
+- VS2 Access profile and access policy
+- All policy items and agents for both virtual servers
+- All customization groups for both virtual servers
+- Kerberos SSO profile
+- SAML IDP Service
+- SAML SP Connector
+- SAML Service Provider
+- SAML IDP Connector (Okta)
+- IDP certificate (Okta signing cert)
+- SAML signing certificate and private key
+- AD AAA server, pool, and node
 
 ### Automated Cleanup (No Confirmation)
 
@@ -1497,7 +1639,18 @@ tail -f /var/log/restjavad.0.log
 - ✅ GSLB Configuration (16 API calls - optional)
 - **Subtotal: 42+ API calls**
 
-**Grand Total: 260+ API calls automated across all solutions**
+#### Solution 7: SAML with Sideband Communication
+- ✅ Active Directory configuration (3 API calls)
+- ✅ SAML IDP Connector with Okta certificate (4 API calls)
+- ✅ Self-signed certificate generation (4 tasks)
+- ✅ SAML SP and IDP Service configuration (4 API calls)
+- ✅ Kerberos SSO profile (1 API call)
+- ✅ VS1 Access Policy with SAML/AD/iRule (25+ API calls with transaction)
+- ✅ VS2 Access Policy with Variable Assign (15+ API calls with transaction)
+- ✅ AS3 Application with 2 virtual servers and iRules (1 API call)
+- **Subtotal: 55+ API calls**
+
+**Grand Total: 315+ API calls automated across all solutions**
 
 ### Not Included (from original collections)
 
@@ -1620,6 +1773,19 @@ For issues or questions:
 This playbook is provided as-is for automation purposes. Test thoroughly before production use.
 
 ## Changelog
+
+### Version 2.2.0
+- **Solution 7: SAML Authentication with Sideband Communication**
+  - Two coordinated virtual servers (VS1 send-sideband, VS2 receive-sideband)
+  - SAML SP with Okta IDP integration
+  - AD Query to retrieve sAMAccountName after SAML authentication
+  - iRule-based sideband communication between virtual servers
+  - Kerberos SSO for backend application authentication
+  - Separate access policies for each virtual server
+  - AS3 deployment with two applications and iRules
+  - Full deployment and cleanup playbooks
+- Updated API call counts: 315+ API calls across all solutions
+- Uses default BIG-IP certificate for SSL (default.crt/default.key)
 
 ### Version 2.1.0
 - **Solution 5: SAML SP with Internal IDP** - SAML Service Provider using BIG-IP IDP

@@ -1,0 +1,619 @@
+---
+###############################################
+# Solution 7 Variables - SAML Authentication with Sideband Communication
+# This solution deploys two virtual servers:
+# - VS1 (send-sideband): SAML SP with Okta IDP, sends session data via sideband
+# - VS2 (receive-sideband): Receives sideband data and applies Kerberos SSO
+###############################################
+
+# BIG-IP Connection Details
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+bigip_validate_certs: no
+
+# Solution naming
+partition_name: "solution7"
+path_name: "solution7"
+
+# VS1 - Send Sideband (SAML SP)
+vs1_name: "send-sideband"
+dns1_name: "sp.acme.com"
+
+# VS2 - Receive Sideband (Kerberos SSO)
+vs2_name: "receive-sideband"
+dns2_name: "receive-sideband"
+
+# Customization type (modern, standard)
+# Use "standard" for maximum compatibility
+custom_type: "modern"
+
+# Feature flags
+deploy_application_via_as3: true
+configure_external_dns: false
+
+# Active Directory Configuration
+ad_server_ip: "10.1.20.7"
+ad_domain: "f5lab.local"
+ad_admin_user: "admin"
+ad_admin_password: "admin"
+
+ad_pool:
+  name: "{{ vs1_name }}-ad-pool"
+  members:
+    - name: "{{ ad_server_ip }}:0"
+      address: "{{ ad_server_ip }}"
+      monitor: "/Common/gateway_icmp"
+
+ad_aaa_server:
+  name: "{{ vs1_name }}-ad-servers"
+  admin_name: "admin"
+  admin_password: "admin"
+  cleanup_cache: "none"
+  domain: "f5lab.local"
+  group_cache_ttl: 30
+  kdc_lockout_duration: 0
+  location_specific: "true"
+  padata: "none"
+  pool: "/Common/{{ vs1_name }}-ad-pool"
+  pso_cache_ttl: 30
+  timeout: 15
+  use_pool: "enabled"
+  domain_controllers:
+    - name: "dc1.f5lab.local"
+      ip: "{{ ad_server_ip }}"
+
+# SAML IDP Connector (Okta) Configuration - for VS1
+saml_idp_connector:
+  name: "{{ vs1_name }}-idp"
+  entity_id: "http://www.okta.com/exkafm6qvkEv6UK0d4x6"
+  sso_uri: "https://dev-818899.okta.com/app/f5dev818899_spacmecom_1/exkafm6qvkEv6UK0d4x6/sso/saml"
+  sso_binding: "http-post"
+  slo_binding: "http-post"
+  signature_type: "rsa-sha256"
+  identity_location: "subject"
+  artifact_resolution_service_addr: "any6"
+  artifact_resolution_service_port: 0
+  location_specific: "false"
+  sign_artifact_resolution_rq: "false"
+  want_authn_request_signed: "false"
+  want_detached_signature: "false"
+  certificate_name: "{{ vs1_name }}-idp"
+  certificate_content: |
+    -----BEGIN CERTIFICATE-----
+    MIIDpDCCAoygAwIBAgIGAXGJ4bHiMA0GCSqGSIb3DQEBCwUAMIGSMQswCQYDVQQG
+    EwJVUzETMBEGA1UECAwKQ2FsaWZvcm5pYTEWMBQGA1UEBwwNU2FuIEZyYW5jaXNj
+    bzENMAsGA1UECgwET2t0YTEUMBIGA1UECwwLU1NPUHJvdmlkZXIxEzARBgNVBAMM
+    CmRldi04MTg4OTkxHDAaBgkqhkiG9w0BCQEWDWluZm9Ab2t0YS5jb20wHhcNMjAw
+    NDE3MjA0MjIxWhcNMzAwNDE3MjA0MzIxWjCBkjELMAkGA1UEBhMCVVMxEzARBgNV
+    BAgMCkNhbGlmb3JuaWExFjAUBgNVBAcMDVNhbiBGcmFuY2lzY28xDTALBgNVBAoM
+    BE9rdGExFDASBgNVBAsMC1NTT1Byb3ZpZGVyMRMwEQYDVQQDDApkZXYtODE4ODk5
+    MRwwGgYJKoZIhvcNAQkBFg1pbmZvQG9rdGEuY29tMIIBIjANBgkqhkiG9w0BAQEF
+    AAOCAQ8AMIIBCgKCAQEAsmCMufvHNoTyZz/KzzZsal/8jzHW6uhoaDNsOcFSmCHQ
+    8lzLCEWH0zbQVFXbn6jnx5aJT8HJARqgqhUGVcD1LEeZzx23kqD1/zmpppJWhqiq
+    bR8gInoA8yClzvMSSA23UPtbfuZiFMBFY0kawqhwAEKBuOqjko6QOxOh+ozZe9Bp
+    /SUAUfqjEw38Ev5RndzogAN50xh7I+/3mnPq31IrCqzhJ/CYEHDXliaw3yb8PjMM
+    RMJn5RrCOgQuWLEq73yX6NqamUGB6HM4cx0tNE/BIYYj25lh2ThVCtoP+tz3uJt+
+    g/R49uhscqgEYHrfPYCYmI0yKLDU+327jxTi4xDEhQIDAQABMA0GCSqGSIb3DQEB
+    CwUAA4IBAQCaxWWl4uZHI0F53SvLr3UTuKE7kmAIKkDi5t0kgROGVz/YxA3J6+c2
+    5iP2qzwiSvFv1fhA4vs5aBifdkoa21C0qoeBmhQoTA9F76rv/QpL+kcgC/Hl4USy
+    r7J9hoR91qWsxHNBSll/eY2FyxW4eSmrjwsaBZ6J8voY8iJwnMEgyoCpi4MJDlLI
+    SOzpSSgcOet213xFhn5Yg0QCsgcv549kaD6c/rPtYbHvDxDyb6QhzSMjNbKiEL/2
+    QI3BHAh5TMk/G8vELuXjTm3/3DcJFn19HH0n+vud68Z+wHKbA2BmtX1ANiLjPdLR
+    w3t2s/OiCoHysKdTs6GXBlrk++DzP4ih
+    -----END CERTIFICATE-----
+
+# SAML Service Provider Configuration - for VS1
+saml_sp:
+  name: "{{ vs1_name }}-sp"
+  entity_id: "https://{{ dns1_name }}"
+  sp_host: "{{ dns1_name }}"
+  sp_scheme: "https"
+  assertion_consumer_binding: "http-post"
+  auth_context_comparison_method: "exact"
+  force_authn: "false"
+  is_authn_request_signed: "false"
+  location_specific: "false"
+  name_id_policy_allow_create: "true"
+  want_assertion_encrypted: "false"
+  want_assertion_signed: "true"
+
+# Self-signed certificate for SAML signing (will be created during deployment)
+# This certificate is used for SAML SP Connector and IDP Service
+saml_signing_cert:
+  name: "{{ vs1_name }}-saml"
+  common_name: "{{ dns1_name }}"
+
+# SAML SP Connector (for IDP service) - VS1 acts as IDP to internal app
+saml_sp_connector:
+  name: "{{ dns1_name }}"
+  entity_id: "{{ dns1_name }}"
+  encryption_type: "aes128"
+  signature_algorithm: "rsa-sha256"
+  is_authn_request_signed: "false"
+  location_specific: "false"
+  slo_binding: "http-post"
+  slo_response_uri: "https://{{ dns1_name }}/module.php/saml/sp/saml2-logout.php/default-sp"
+  slo_uri: "https://{{ dns1_name }}/module.php/saml/sp/saml2-logout.php/default-sp"
+  slo_uri_host: "{{ dns1_name }}"
+  slo_uri_path: "/saml/sp/profile/post/sls"
+  # Uses self-signed certificate created during deployment
+  sp_certificate: "/Common/{{ vs1_name }}-saml"
+  sp_location: "internal"
+  want_assertion_encrypted: "false"
+  want_assertion_signed: "true"
+  want_response_signed: "false"
+  acs_binding: "http-post"
+  acs_index: 0
+  acs_is_default: "true"
+  acs_uri: "https://{{ dns1_name }}/module.php/saml/sp/saml2-acs.php/default-sp"
+
+# SAML IDP Service Configuration - VS1 acts as IDP
+saml_idp_service:
+  name: "{{ vs1_name }}-sso"
+  entity_id: "https://{{ dns1_name }}/bigip"
+  idp_host: "{{ dns1_name }}"
+  idp_scheme: "https"
+  # Uses self-signed certificate created during deployment
+  idp_certificate: "/Common/{{ vs1_name }}-saml"
+  idp_sign_key: "/Common/{{ vs1_name }}-saml"
+  assertion_validity: 600
+  auth_context_method: "urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified"
+  encrypt_subject: "false"
+  encryption_type_subject: "aes128"
+  key_transport_algorithm: "rsa-oaep"
+  location_specific: "false"
+  log_level: "notice"
+  saml_profiles:
+    - "web-browser-sso"
+  subject_type: "transient"
+  subject_value: "%{session.logon.last.username}"
+  sp_connector: "/Common/{{ dns1_name }}"
+
+# Kerberos SSO Configuration - for VS2
+kerberos_sso:
+  name: "{{ vs2_name }}-sso"
+  account_name: "HOST/{{ vs2_name }}.f5lab.local"
+  account_password: "{{ vs2_name }}"
+  location_specific: "false"
+  realm: "F5LAB.LOCAL"
+  send_authorization: "401"
+  spn_pattern: "HTTP/{{ dns1_name }}"
+  ticket_lifetime: 600
+  upn_support: "disabled"
+  user_realm_source: "session.logon.last.domain"
+  username_source: "session.logon.last.username"
+
+# iRule Configuration
+irules:
+  send_sideband:
+    name: "{{ vs1_name }}-irule"
+    content: |
+      when ACCESS_POLICY_AGENT_EVENT {
+        switch -glob [string tolower [ACCESS::policy agent_id]] {
+          "{{ vs1_name }}" {
+            #established a TCP based sideband connection to virtual server receive-sideband
+            set conn [connect -protocol TCP -timeout 100 -idle 30 -status conn_status /{{ partition_name }}/{{ vs2_name }}/{{ vs2_name }}]
+
+            #converts the APM session variable to a TCL variable
+            #sends a HTTP request over the sideband with the username in a query string
+            set username [ACCESS::session data get "session.ad.last.attr.sAMAccountName"]
+            set data "GET /?username=$username HTTP/1.1\r\nHost: {{ dns1_name }}\r\nUser-Agent: Side-band\r\nclientless-mode: 1\r\n\r\n"
+            set send_info [send -timeout 3000 -status send_status $conn $data]
+
+            # waits 1 second and then closes the connection
+            after 1000
+            close $conn
+          }
+        }
+      }
+
+  receive_sideband:
+    name: "{{ vs2_name }}-irule"
+    content: |
+      when CLIENT_ACCEPTED {
+        ACCESS::restrict_irule_events disable
+      }
+
+      when HTTP_REQUEST {
+        #Parses query string and splits the first parameter name from the value.
+        #The value is stored as the username variable
+        set username [lindex [split [HTTP::query] =] 1]
+      }
+
+      when ACCESS_SESSION_STARTED {
+        #Stores the tcl username variable as a session variable
+        ACCESS::session data set session.logon.last.username $username
+      }
+
+#######################################
+# VS1 Access Policy Configuration (Send Sideband)
+#######################################
+
+# Customization Groups for VS1
+vs1_customization_groups:
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+# Policy Agents for VS1
+vs1_policy_agents:
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow_ag"
+
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny_ag"
+    customization_group: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+
+  irule_event:
+    name: "{{ vs1_name }}-psp_act_irule_event_ag"
+    expect_data: "http"
+    id: "{{ vs1_name }}"
+
+  variable_assign:
+    name: "{{ vs1_name }}-psp_act_variable_assign_ag"
+    type: "general"
+    variables:
+      - append: "false"
+        expression: "mcget {session.saml.last.nameIDValue}"
+        secure: "false"
+        varname: "session.logon.last.username"
+
+  ad_query:
+    name: "{{ vs1_name }}-psp_act_active_directory_query_ag"
+    auth_max_logon_attempt: 3
+    fetch_nested_groups: "false"
+    fetch_primary_group: "false"
+    hints: "false"
+    max_pwd_reset_attempt: 3
+    pwd_complexity_check: "false"
+    pwd_expiry_warn_days: 0
+    query_filter: " (mail=%{session.saml.last.nameIDValue})"
+    server: "/Common/{{ vs1_name }}-ad-servers"
+    show_extended_error: "false"
+    type: "query"
+    upn: "false"
+    query_attrname:
+      - "cn"
+      - "displayName"
+      - "distinguishedName"
+      - "dn"
+      - "employeeID"
+      - "givenName"
+      - "homeMDB"
+      - "mail"
+      - "memberOf"
+      - "mobile"
+      - "msDS-ResultantPSO"
+      - "name"
+      - "objectGUID"
+      - "otherMobile"
+      - "pager"
+      - "primaryGroupID"
+      - "pwdLastSet"
+      - "sAMAccountName"
+      - "sn"
+      - "telephoneNumber"
+      - "userAccountControl"
+      - "userPrincipalName"
+
+  saml_auth:
+    name: "{{ vs1_name }}-psp_act_saml_auth_ag"
+    force_authn: "use-aaa-server-setting"
+    server: "/Common/{{ vs1_name }}-sp"
+
+# Policy Items for VS1
+vs1_policy_items:
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+  irule_event:
+    name: "{{ vs1_name }}-psp_act_irule_event"
+    caption: "iRule Event"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "irule-event"
+    nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
+
+  variable_assign:
+    name: "{{ vs1_name }}-psp_act_variable_assign"
+    caption: "Variable Assign"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "variable-assign"
+    nextItem: "/Common/{{ vs1_name }}-psp_act_irule_event"
+
+  ad_query:
+    name: "{{ vs1_name }}-psp_act_active_directory_query"
+    caption: "AD Query"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-active-directory"
+    rules:
+      - caption: "AD Query Passed"
+        expression: "expr {[mcget {session.ad.last.queryresult}] == 1}"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_variable_assign"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  saml_auth:
+    name: "{{ vs1_name }}-psp_act_saml_auth"
+    caption: "SAML Auth"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "aaa-saml"
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.saml.last.result}] == 1}"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_active_directory_query"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  entry:
+    name: "{{ vs1_name }}-psp_ent"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    nextItem: "/Common/{{ vs1_name }}-psp_act_saml_auth"
+
+# Access Policy for VS1
+vs1_access_policy:
+  name: "{{ vs1_name }}-psp"
+  default_ending: "{{ vs1_name }}-psp_end_deny"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+  start_item: "{{ vs1_name }}-psp_ent"
+  type: "access-policy"
+  policy_items:
+    - name: "{{ vs1_name }}-psp_act_irule_event"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_variable_assign"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_active_directory_query"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_act_saml_auth"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+
+# Access Profile for VS1
+vs1_access_profile:
+  name: "{{ vs1_name }}-psp"
+  accept_languages:
+    - "en"
+  access_policy: "/Common/{{ vs1_name }}-psp"
+  customization_group: "/Common/{{ vs1_name }}-psp_logout"
+  eps_group: "/Common/{{ vs1_name }}-psp_eps"
+  errormap_group: "/Common/{{ vs1_name }}-psp_errormap"
+  framework_installation_group: "/Common/{{ vs1_name }}-psp_framework_installation"
+  general_ui_group: "/Common/{{ vs1_name }}-psp_general_ui"
+  sso_name: "/Common/{{ vs1_name }}-sso"
+  access_policy_timeout: 300
+  default_language: "en"
+  httponly_cookie: "false"
+  inactivity_timeout: 900
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  max_in_progress_sessions: 128
+  max_session_timeout: 604800
+  min_failure_delay: 2
+  modified_since_last_policy_sync: "false"
+  persistent_cookie: "false"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  secure_cookie: "true"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  log_settings:
+    - "/Common/default-log-setting"
+
+#######################################
+# VS2 Access Policy Configuration (Receive Sideband)
+#######################################
+
+# Customization Groups for VS2
+vs2_customization_groups:
+  - name: "{{ vs2_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs2_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs2_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs2_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs2_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs2_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+# Policy Agents for VS2
+vs2_policy_agents:
+  allow_ending:
+    name: "{{ vs2_name }}-psp_end_allow_ag"
+
+  deny_ending:
+    name: "{{ vs2_name }}-psp_end_deny_ag"
+    customization_group: "/Common/{{ vs2_name }}-psp_end_deny_ag"
+
+  variable_assign:
+    name: "{{ vs2_name }}-psp_act_variable_assign_1_ag"
+    type: "general"
+    variables:
+      - append: "false"
+        expression: "return {F5LAB.LOCAL}"
+        secure: "false"
+        varname: "session.logon.last.domain"
+
+# Policy Items for VS2
+vs2_policy_items:
+  allow_ending:
+    name: "{{ vs2_name }}-psp_end_allow"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  deny_ending:
+    name: "{{ vs2_name }}-psp_end_deny"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+  variable_assign:
+    name: "{{ vs2_name }}-psp_act_variable_assign_1"
+    caption: "set_variables"
+    color: 1
+    item_type: "action"
+    loop: "false"
+    agent_type: "variable-assign"
+    nextItem: "/Common/{{ vs2_name }}-psp_end_allow"
+
+  entry:
+    name: "{{ vs2_name }}-psp_ent"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    nextItem: "/Common/{{ vs2_name }}-psp_act_variable_assign_1"
+
+# Access Policy for VS2
+vs2_access_policy:
+  name: "{{ vs2_name }}-psp"
+  default_ending: "{{ vs2_name }}-psp_end_deny"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+  start_item: "{{ vs2_name }}-psp_ent"
+  type: "access-policy"
+  policy_items:
+    - name: "{{ vs2_name }}-psp_act_variable_assign_1"
+      partition: "Common"
+    - name: "{{ vs2_name }}-psp_end_allow"
+      partition: "Common"
+    - name: "{{ vs2_name }}-psp_end_deny"
+      partition: "Common"
+    - name: "{{ vs2_name }}-psp_ent"
+      partition: "Common"
+
+# Access Profile for VS2
+vs2_access_profile:
+  name: "{{ vs2_name }}-psp"
+  accept_languages:
+    - "en"
+  access_policy: "/Common/{{ vs2_name }}-psp"
+  customization_group: "/Common/{{ vs2_name }}-psp_logout"
+  eps_group: "/Common/{{ vs2_name }}-psp_eps"
+  errormap_group: "/Common/{{ vs2_name }}-psp_errormap"
+  framework_installation_group: "/Common/{{ vs2_name }}-psp_framework_installation"
+  general_ui_group: "/Common/{{ vs2_name }}-psp_general_ui"
+  sso_name: "/Common/{{ vs2_name }}-sso"
+  access_policy_timeout: 300
+  default_language: "en"
+  httponly_cookie: "false"
+  inactivity_timeout: 900
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  max_in_progress_sessions: 128
+  max_session_timeout: 604800
+  min_failure_delay: 2
+  modified_since_last_policy_sync: "false"
+  persistent_cookie: "false"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  secure_cookie: "true"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  log_settings:
+    - "/Common/default-log-setting"
+
+#######################################
+# AS3 Application Configuration
+#######################################
+
+as3_config:
+  # VS1 - Send Sideband (HTTPS)
+  vs1_virtual_address: "10.1.10.170"
+  vs1_virtual_port: 443
+  vs1_pool_members:
+    - "10.1.20.6:443"
+  vs1_pool_monitor: "tcp"
+
+  # VS2 - Receive Sideband (HTTP - internal only)
+  vs2_virtual_address: "192.168.0.1"
+  vs2_virtual_port: 80
+  vs2_pool_members:
+    - "10.1.20.6:80"
+  vs2_pool_monitor: "tcp"
+
+  # SSL/TLS Configuration for VS1
+  # Using default self-signed certificate (exists on all BIG-IP systems)
+  # NOTE: For production, replace with your own certificate
+  tls_cert_name: "default.crt"
+  tls_key_name: "default.key"
+
+  # SNAT configuration
+  snat: "auto"
+
+#######################################
+# GSLB Configuration (optional)
+#######################################
+gslb_enabled: false
+gslb_dns_server: "10.1.1.11"

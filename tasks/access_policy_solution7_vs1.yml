@@ -1,0 +1,467 @@
+---
+# Create Access Policy for Solution 7 VS1 - Send Sideband
+# SAML Auth -> AD Query -> Variable Assign -> iRule Event -> Allow
+
+- name: Create transaction for VS1 policy configuration
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body: {}
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: transaction_result
+
+- name: Set transaction ID
+  set_fact:
+    trans_id: "{{ transaction_result.json.transId }}"
+
+- name: Display transaction ID
+  debug:
+    msg: "VS1 Transaction ID: {{ trans_id }}"
+
+# Customization Groups
+- name: Create VS1 customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  loop: "{{ vs1_customization_groups }}"
+  register: customization_groups_result
+
+# Policy Agents
+
+- name: Create VS1 allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_agents.allow_ending.name }}"
+      partition: "Common"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: allow_ending_result
+
+- name: Create VS1 deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_agents.deny_ending.name }}"
+      partition: "Common"
+      customizationGroup: "{{ vs1_policy_agents.deny_ending.customization_group }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: deny_ending_result
+
+- name: Create VS1 iRule Event agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/irule-event/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_agents.irule_event.name }}"
+      partition: "Common"
+      expectData: "{{ vs1_policy_agents.irule_event.expect_data }}"
+      id: "{{ vs1_policy_agents.irule_event.id }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: irule_event_result
+
+- name: Create VS1 variable assign agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_agents.variable_assign.name }}"
+      partition: "Common"
+      type: "{{ vs1_policy_agents.variable_assign.type }}"
+      variables: "{{ vs1_policy_agents.variable_assign.variables }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: variable_assign_result
+
+- name: Create VS1 AD Query agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_agents.ad_query.name }}"
+      partition: "Common"
+      authMaxLogonAttempt: "{{ vs1_policy_agents.ad_query.auth_max_logon_attempt }}"
+      fetchNestedGroups: "{{ vs1_policy_agents.ad_query.fetch_nested_groups }}"
+      fetchPrimaryGroup: "{{ vs1_policy_agents.ad_query.fetch_primary_group }}"
+      hints: "{{ vs1_policy_agents.ad_query.hints }}"
+      maxPwdResetAttempt: "{{ vs1_policy_agents.ad_query.max_pwd_reset_attempt }}"
+      pwdComplexityCheck: "{{ vs1_policy_agents.ad_query.pwd_complexity_check }}"
+      pwdExpiryWarnDays: "{{ vs1_policy_agents.ad_query.pwd_expiry_warn_days }}"
+      queryAttrname: "{{ vs1_policy_agents.ad_query.query_attrname }}"
+      queryFilter: "{{ vs1_policy_agents.ad_query.query_filter }}"
+      server: "{{ vs1_policy_agents.ad_query.server }}"
+      showExtendedError: "{{ vs1_policy_agents.ad_query.show_extended_error }}"
+      type: "{{ vs1_policy_agents.ad_query.type }}"
+      upn: "{{ vs1_policy_agents.ad_query.upn }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: ad_query_result
+
+- name: Create VS1 SAML auth agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-saml/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_agents.saml_auth.name }}"
+      partition: "Common"
+      forceAuthn: "{{ vs1_policy_agents.saml_auth.force_authn }}"
+      server: "{{ vs1_policy_agents.saml_auth.server }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: saml_auth_result
+
+# Policy Items
+
+- name: Create VS1 allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.allow_ending.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.allow_ending.caption }}"
+      color: "{{ vs1_policy_items.allow_ending.color }}"
+      itemType: "{{ vs1_policy_items.allow_ending.item_type }}"
+      agents:
+        - name: "{{ vs1_policy_agents.allow_ending.name }}"
+          partition: "Common"
+          type: "{{ vs1_policy_items.allow_ending.agent_type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: allow_ending_item_result
+
+- name: Create VS1 deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.deny_ending.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.deny_ending.caption }}"
+      color: "{{ vs1_policy_items.deny_ending.color }}"
+      itemType: "{{ vs1_policy_items.deny_ending.item_type }}"
+      agents:
+        - name: "{{ vs1_policy_agents.deny_ending.name }}"
+          partition: "Common"
+          type: "{{ vs1_policy_items.deny_ending.agent_type }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: deny_ending_item_result
+
+- name: Create VS1 iRule Event policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.irule_event.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.irule_event.caption }}"
+      color: "{{ vs1_policy_items.irule_event.color }}"
+      itemType: "{{ vs1_policy_items.irule_event.item_type }}"
+      loop: "{{ vs1_policy_items.irule_event.loop }}"
+      agents:
+        - name: "{{ vs1_policy_agents.irule_event.name }}"
+          partition: "Common"
+          type: "{{ vs1_policy_items.irule_event.agent_type }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ vs1_policy_items.irule_event.nextItem }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: irule_event_item_result
+
+- name: Create VS1 variable assign policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.variable_assign.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.variable_assign.caption }}"
+      color: "{{ vs1_policy_items.variable_assign.color }}"
+      itemType: "{{ vs1_policy_items.variable_assign.item_type }}"
+      loop: "{{ vs1_policy_items.variable_assign.loop }}"
+      agents:
+        - name: "{{ vs1_policy_agents.variable_assign.name }}"
+          partition: "Common"
+          type: "{{ vs1_policy_items.variable_assign.agent_type }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ vs1_policy_items.variable_assign.nextItem }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: variable_assign_item_result
+
+- name: Create VS1 AD Query policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.ad_query.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.ad_query.caption }}"
+      color: "{{ vs1_policy_items.ad_query.color }}"
+      itemType: "{{ vs1_policy_items.ad_query.item_type }}"
+      loop: "{{ vs1_policy_items.ad_query.loop }}"
+      agents:
+        - name: "{{ vs1_policy_agents.ad_query.name }}"
+          partition: "Common"
+          type: "{{ vs1_policy_items.ad_query.agent_type }}"
+      rules: "{{ vs1_policy_items.ad_query.rules }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: ad_query_item_result
+
+- name: Create VS1 SAML auth policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.saml_auth.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.saml_auth.caption }}"
+      color: "{{ vs1_policy_items.saml_auth.color }}"
+      itemType: "{{ vs1_policy_items.saml_auth.item_type }}"
+      loop: "{{ vs1_policy_items.saml_auth.loop }}"
+      agents:
+        - name: "{{ vs1_policy_agents.saml_auth.name }}"
+          partition: "Common"
+          type: "{{ vs1_policy_items.saml_auth.agent_type }}"
+      rules: "{{ vs1_policy_items.saml_auth.rules }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: saml_auth_item_result
+
+- name: Create VS1 entry point policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_policy_items.entry.name }}"
+      partition: "Common"
+      caption: "{{ vs1_policy_items.entry.caption }}"
+      color: "{{ vs1_policy_items.entry.color }}"
+      itemType: "{{ vs1_policy_items.entry.item_type }}"
+      loop: "{{ vs1_policy_items.entry.loop }}"
+      rules:
+        - caption: "fallback"
+          nextItem: "{{ vs1_policy_items.entry.nextItem }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: entry_item_result
+
+# Create Access Policy
+
+- name: Prepare VS1 access policy body
+  set_fact:
+    vs1_access_policy_body:
+      name: "{{ vs1_access_policy.name }}"
+      partition: "Common"
+      defaultEnding: "{{ vs1_access_policy.default_ending }}"
+      maxMacroLoopCount: "{{ vs1_access_policy.max_macro_loop_count }}"
+      oneshotMacro: "{{ vs1_access_policy.oneshot_macro }}"
+      startItem: "{{ vs1_access_policy.start_item }}"
+      type: "{{ vs1_access_policy.type }}"
+      items: "{{ vs1_access_policy.policy_items }}"
+
+- name: Create VS1 access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body: "{{ vs1_access_policy_body }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: access_policy_result
+
+# Create Access Profile
+
+- name: Create VS1 access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body:
+      name: "{{ vs1_access_profile.name }}"
+      partition: "Common"
+      acceptLanguages: "{{ vs1_access_profile.accept_languages }}"
+      accessPolicy: "{{ vs1_access_profile.access_policy }}"
+      customizationGroup: "{{ vs1_access_profile.customization_group }}"
+      epsGroup: "{{ vs1_access_profile.eps_group }}"
+      errormapGroup: "{{ vs1_access_profile.errormap_group }}"
+      frameworkInstallationGroup: "{{ vs1_access_profile.framework_installation_group }}"
+      generalUiGroup: "{{ vs1_access_profile.general_ui_group }}"
+      ssoName: "{{ vs1_access_profile.sso_name }}"
+      accessPolicyTimeout: "{{ vs1_access_profile.access_policy_timeout }}"
+      defaultLanguage: "{{ vs1_access_profile.default_language }}"
+      httponlyCookie: "{{ vs1_access_profile.httponly_cookie }}"
+      inactivityTimeout: "{{ vs1_access_profile.inactivity_timeout }}"
+      logoutUriTimeout: "{{ vs1_access_profile.logout_uri_timeout }}"
+      maxConcurrentSessions: "{{ vs1_access_profile.max_concurrent_sessions }}"
+      maxConcurrentUsers: "{{ vs1_access_profile.max_concurrent_users }}"
+      maxFailureDelay: "{{ vs1_access_profile.max_failure_delay }}"
+      maxInProgressSessions: "{{ vs1_access_profile.max_in_progress_sessions }}"
+      maxSessionTimeout: "{{ vs1_access_profile.max_session_timeout }}"
+      minFailureDelay: "{{ vs1_access_profile.min_failure_delay }}"
+      modifiedSinceLastPolicySync: "{{ vs1_access_profile.modified_since_last_policy_sync }}"
+      persistentCookie: "{{ vs1_access_profile.persistent_cookie }}"
+      restrictToSingleClientIp: "{{ vs1_access_profile.restrict_to_single_client_ip }}"
+      scope: "{{ vs1_access_profile.scope }}"
+      secureCookie: "{{ vs1_access_profile.secure_cookie }}"
+      type: "{{ vs1_access_profile.type }}"
+      useHttp_503OnError: "{{ vs1_access_profile.use_http_503_on_error }}"
+      userIdentityMethod: "{{ vs1_access_profile.user_identity_method }}"
+      logSettings: "{{ vs1_access_profile.log_settings }}"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: access_profile_result
+
+# Commit Transaction
+
+- name: Commit VS1 transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: commit_result
+
+- name: Display VS1 transaction commit result
+  debug:
+    msg: "VS1 Transaction committed: {{ commit_result.status }}"
+
+# Apply Policy
+
+- name: Apply VS1 access policy (increment generation)
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_access_profile.name }}"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200, 201]
+    validate_certs: no
+    timeout: 60
+  register: apply_policy_result
+
+- name: Display VS1 policy apply result
+  debug:
+    msg: "VS1 Access policy applied: {{ apply_policy_result.status }}"
