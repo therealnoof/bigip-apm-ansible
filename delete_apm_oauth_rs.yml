@@ -1,0 +1,334 @@
+---
+# Solution 9: OAuth Resource Server Cleanup
+# Removes all components created by deploy_apm_oauth_rs.yml
+#
+# Usage:
+#   ansible-playbook delete_apm_oauth_rs.yml
+#
+# This playbook removes (in reverse order):
+# - AS3 Application tenant
+# - Access Profile
+# - Access Policy and all policy items
+# - Policy agents
+# - Customization groups
+# - OAuth Client Application
+# - JWT Provider List
+# - JWK Configuration
+# - OAuth Provider
+# - CA Certificate
+
+- name: Delete OAuth Resource Server (Solution 9)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution9.yml
+
+  vars:
+    # Confirmation prompt
+    confirm_delete: false
+
+  tasks:
+    # =========================================================================
+    # CONFIRMATION PROMPT
+    # =========================================================================
+
+    - name: Confirm deletion
+      pause:
+        prompt: |
+          WARNING: This will delete all Solution 9 (OAuth Resource Server) components:
+          - AS3 Tenant: {{ partition_name }}
+          - Access Profile: {{ vs1_name }}-psp
+          - OAuth Client App: {{ oauth_client_app.name }}
+          - JWT Provider List: {{ jwt_provider_list.name }}
+          - JWK: {{ jwk_config.name }}
+          - OAuth Provider: {{ oauth_provider.name }}
+          - CA Certificate: {{ ca_cert.name }}
+
+          Type 'yes' to continue
+      register: confirm_result
+      when: not confirm_delete
+
+    - name: Check confirmation
+      fail:
+        msg: "Deletion cancelled by user"
+      when:
+        - not confirm_delete
+        - confirm_result.user_input | default('') != 'yes'
+
+    # =========================================================================
+    # DELETE AS3 APPLICATION
+    # =========================================================================
+
+    - name: Delete AS3 application tenant
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404, 422]
+        timeout: 120
+      register: as3_delete
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 tenant {{ partition_name }} deletion: {{ 'deleted' if as3_delete.status in [200, 204] else 'not found or error' }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DELETE ACCESS PROFILE
+    # =========================================================================
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - profile
+
+    # =========================================================================
+    # DELETE ACCESS POLICY
+    # =========================================================================
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE POLICY ITEMS
+    # =========================================================================
+
+    - name: Delete policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_ent"
+        - "{{ vs1_name }}-psp_act_oauth_scope"
+        - "{{ vs1_name }}-psp_end_allow"
+        - "{{ vs1_name }}-psp_end_deny"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE POLICY AGENTS
+    # =========================================================================
+
+    - name: Delete OAuth scope agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-oauth/~Common~{{ vs1_name }}-psp_act_oauth_scope_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete allow ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/~Common~{{ vs1_name }}-psp_end_allow_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete deny ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/~Common~{{ vs1_name }}-psp_end_deny_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    # =========================================================================
+    # DELETE CUSTOMIZATION GROUPS
+    # =========================================================================
+
+    - name: Delete customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_logout"
+        - "{{ vs1_name }}-psp_eps"
+        - "{{ vs1_name }}-psp_errormap"
+        - "{{ vs1_name }}-psp_framework_installation"
+        - "{{ vs1_name }}-psp_general_ui"
+        - "{{ vs1_name }}-psp_end_deny_ag"
+        - "{{ vs1_name }}_oauth_authz_client_app_customization"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - customization
+
+    # =========================================================================
+    # DELETE OAUTH CLIENT APPLICATION
+    # =========================================================================
+
+    - name: Delete OAuth client application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/oauth-client-app/~Common~{{ oauth_client_app.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - client
+
+    # =========================================================================
+    # DELETE JWT PROVIDER LIST
+    # =========================================================================
+
+    - name: Delete JWT provider list
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwt-provider-list/~Common~{{ jwt_provider_list.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - jwt
+
+    # =========================================================================
+    # DELETE JWT CONFIGURATION
+    # =========================================================================
+
+    - name: Delete manual JWT configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwt-config/~Common~{{ vs1_name }}-jwt-config"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - jwt
+
+    - name: Delete auto JWT configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwt-config/~Common~auto_jwt_{{ oauth_provider.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - jwt
+
+    # =========================================================================
+    # DELETE JWK CONFIGURATION
+    # =========================================================================
+
+    - name: Delete JWK configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwk-config/~Common~{{ jwk_config.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - jwk
+
+    # =========================================================================
+    # DELETE OAUTH PROVIDER
+    # =========================================================================
+
+    - name: Delete OAuth provider
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider/~Common~{{ oauth_provider.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - provider
+
+    # =========================================================================
+    # DELETE CA CERTIFICATE
+    # =========================================================================
+
+    - name: Delete CA certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ ca_cert.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - certificate
+
+    # =========================================================================
+    # DELETION SUMMARY
+    # =========================================================================
+
+    - name: Display deletion summary
+      debug:
+        msg: |
+          ============================================================
+          OAuth Resource Server Cleanup Complete
+          ============================================================
+
+          Deleted Components:
+          - AS3 Tenant: {{ partition_name }}
+          - Access Profile: {{ vs1_name }}-psp
+          - Access Policy: {{ vs1_name }}-psp
+          - OAuth Client App: {{ oauth_client_app.name }}
+          - JWT Provider List: {{ jwt_provider_list.name }}
+          - JWK: {{ jwk_config.name }}
+          - OAuth Provider: {{ oauth_provider.name }}
+          - CA Certificate: {{ ca_cert.name }}
+
+          ============================================================
+      tags:
+        - always

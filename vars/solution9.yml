@@ -1,0 +1,350 @@
+---
+# Solution 9: OAuth Resource Server (Client)
+# BIG-IP APM as OAuth Resource Server consuming tokens from OAuth Authorization Server
+#
+# Authentication Flow:
+# 1. User accesses protected resource with OAuth token
+# 2. OAuth Scope agent validates the token against the Authorization Server
+# 3. If valid, user is allowed access to the resource
+# 4. If invalid, user is denied access
+#
+# PREREQUISITE: Solution 8 (OAuth Authorization Server) must be deployed first
+# The OAuth Provider in this solution points to the Authorization Server's OIDC endpoint
+
+# =============================================================================
+# BIG-IP CONNECTION SETTINGS
+# =============================================================================
+
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no
+
+# =============================================================================
+# BASIC CONFIGURATION
+# =============================================================================
+
+# Virtual Server and DNS Configuration
+vs1_name: "solution9"
+dns1_name: "solution9.acme.com"
+partition_name: "solution9"
+path_name: "solution9"
+
+# OAuth Authorization Server Reference (Solution 8)
+# This is the DNS name of the OAuth Authorization Server
+oauth_as_name: "as"
+oauth_as_dns: "as.acme.com"
+
+# Customization type: "standard" or "modern"
+custom_type: "modern"
+
+# =============================================================================
+# OAUTH PROVIDER CONFIGURATION
+# =============================================================================
+
+# CA Certificate for trusting the Authorization Server
+ca_cert:
+  name: "ca.acme.com"
+  # Certificate content - replace with your CA certificate
+  # This should be the CA that signed the Authorization Server's certificate
+  content: |
+    -----BEGIN CERTIFICATE-----
+    MIIDXTCCAkWgAwIBAgIJAJC1HiIAZAiUMA0Gcsha5P9CjScRsxQBKvawNlxcWEBjpBf0FA5CD1aN
+    24cyLns7+E0fgVPHTnY84zNH0MmdGaSsbwLmpKGz1hCkEJGNpMPDLfdeCKRX
+    -----END CERTIFICATE-----
+
+oauth_provider:
+  name: "{{ vs1_name }}-provider"
+  partition: "Common"
+  allow_self_signed_jwk_cert: "yes"
+  discovery_interval: 60
+  ignore_expired_cert: "false"
+  introspect: "supported"
+  max_json_nesting_layers: 8
+  max_response_size: 131072
+  # Points to the OAuth Authorization Server's OIDC configuration
+  openid_cfg_uri: "https://{{ oauth_as_dns }}/f5-oauth2/v1/.well-known/openid-configuration"
+  save_json_payload: "disabled"
+  trusted_ca_bundle: "/Common/{{ ca_cert.name }}"
+  type: "f5"
+  use_auto_jwt_config: "true"
+
+# =============================================================================
+# JWK CONFIGURATION (Pre-shared Key)
+# =============================================================================
+
+jwk_config:
+  name: "{{ vs1_name }}-jwk"
+  partition: "Common"
+  alg_type: "HS256"
+  auto_generated: "false"
+  include_x5c: "no"
+  key_id: "lab"
+  key_type: "octet"
+  key_use: "signing"
+  # IMPORTANT: This must match the shared secret on the Authorization Server
+  shared_secret: "secret"
+  shared_secret_enc_format: "none"
+  use_client_secret: "false"
+
+# =============================================================================
+# JWT PROVIDER LIST
+# =============================================================================
+
+jwt_provider_list:
+  name: "{{ vs1_name }}-list"
+  partition: "Common"
+  access_token_expires_in: 0
+  providers:
+    - "/Common/{{ vs1_name }}-provider"
+
+# =============================================================================
+# OAUTH CLIENT APPLICATION
+# =============================================================================
+
+oauth_client_app:
+  name: "{{ vs1_name }}"
+  partition: "Common"
+  app_name: "{{ vs1_name }}"
+  auth_type: "secret"
+  # Customization group created automatically
+  customization_group: "/Common/{{ vs1_name }}_oauth_authz_client_app_customization"
+
+  # Token Lifetimes
+  access_token_lifetime: 5
+  auth_code_lifetime: 5
+  id_token_lifetime: 5
+  jwt_access_token_lifetime: 5
+  jwt_refresh_token_lifetime: 60
+  refresh_token_lifetime: 480
+  refresh_token_usage_limit: 64
+
+  # Token Configuration
+  generate_jwt_refresh_token: "true"
+  generate_refresh_token: "true"
+  reuse_access_token: "false"
+  reuse_refresh_token: "false"
+  use_profile_token_mgmt_settings: "true"
+
+  # Grant Types
+  grant_code: "enabled"
+  grant_password: "disabled"
+  grant_token: "disabled"
+
+  # OpenID Connect
+  openid_connect: "enabled"
+
+  # Redirect URIs
+  redirect_uris:
+    - "https://www.getpostman.com/oauth2/callback"
+    - "https://{{ dns1_name }}/oauth/client/redirect"
+
+# =============================================================================
+# APM ACCESS POLICY CONFIGURATION
+# =============================================================================
+
+# Customization Groups (order matters - deny ending first)
+customization_groups:
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+# =============================================================================
+# POLICY AGENTS
+# =============================================================================
+
+policy_agents:
+  # Allow Ending Agent
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow_ag"
+    partition: "Common"
+
+  # Deny Ending Agent
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny_ag"
+    partition: "Common"
+    customization_group: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+
+  # OAuth Scope Agent
+  oauth_scope:
+    name: "{{ vs1_name }}-psp_act_oauth_scope_ag"
+    partition: "Common"
+    grant_type: "authorization-code"
+    jwt_provider_list: "/Common/{{ vs1_name }}-list"
+    openid_connect: "enabled"
+    openid_flow_type: "code"
+    redirection_uri: "https://%{session.server.network.name}/oauth/client/redirect"
+    token_validation_mode: "internal"
+    type: "scope"
+
+# =============================================================================
+# POLICY ITEMS
+# =============================================================================
+
+policy_items:
+  # Start/Entry Item
+  entry:
+    name: "{{ vs1_name }}-psp_ent"
+    partition: "Common"
+    caption: "Start"
+    color: 1
+    item_type: "entry"
+    loop: "false"
+    rules:
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_act_oauth_scope"
+
+  # OAuth Scope Item
+  oauth_scope:
+    name: "{{ vs1_name }}-psp_act_oauth_scope"
+    partition: "Common"
+    caption: "OAuth Scope"
+    color: 1
+    item_type: "action"
+    agent_type: "aaa-oauth"
+    loop: "false"
+    rules:
+      - caption: "Successful"
+        expression: "expr {[mcget {session.oauth.scope.last.authresult}] == 1}"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
+      - caption: "fallback"
+        nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+
+  # Allow Ending Item
+  allow_ending:
+    name: "{{ vs1_name }}-psp_end_allow"
+    partition: "Common"
+    caption: "Allow"
+    color: 1
+    item_type: "ending"
+    agent_type: "ending-allow"
+
+  # Deny Ending Item
+  deny_ending:
+    name: "{{ vs1_name }}-psp_end_deny"
+    partition: "Common"
+    caption: "Deny"
+    color: 2
+    item_type: "ending"
+    agent_type: "ending-deny"
+
+# =============================================================================
+# ACCESS POLICY
+# =============================================================================
+
+access_policy:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  default_ending: "{{ vs1_name }}-psp_end_deny"
+  start_item: "{{ vs1_name }}-psp_ent"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+  type: "access-policy"
+  policy_items_list:
+    - name: "{{ vs1_name }}-psp_act_oauth_scope"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+    - name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+
+# =============================================================================
+# ACCESS PROFILE
+# =============================================================================
+
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  access_policy: "/Common/{{ vs1_name }}-psp"
+  accept_languages:
+    - "en"
+  default_language: "en"
+  customization_group: "/Common/{{ vs1_name }}-psp_logout"
+  eps_group: "/Common/{{ vs1_name }}-psp_eps"
+  errormap_group: "/Common/{{ vs1_name }}-psp_errormap"
+  framework_installation_group: "/Common/{{ vs1_name }}-psp_framework_installation"
+  general_ui_group: "/Common/{{ vs1_name }}-psp_general_ui"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  max_session_timeout: 604800
+  logout_uri_timeout: 5
+  max_concurrent_sessions: 0
+  max_concurrent_users: 0
+  max_failure_delay: 5
+  min_failure_delay: 2
+  max_in_progress_sessions: 128
+  httponly_cookie: "false"
+  persistent_cookie: "false"
+  secure_cookie: "true"
+  restrict_to_single_client_ip: "false"
+  scope: "profile"
+  type: "all"
+  use_http_503_on_error: "false"
+  user_identity_method: "http"
+  modified_since_last_policy_sync: "false"
+  log_settings:
+    - "/Common/default-log-setting"
+
+# =============================================================================
+# AS3 APPLICATION CONFIGURATION
+# =============================================================================
+
+as3_config:
+  # Virtual Server Address (update for your environment)
+  virtual_address: "10.1.10.109"
+  virtual_port: 443
+
+  # SSL/TLS Configuration
+  tls_cert_name: "default.crt"
+  tls_key_name: "default.key"
+
+  # Backend Pool (for the protected application)
+  pool_members:
+    - address: "10.1.20.6"
+      port: 80
+
+  # SNAT Configuration
+  snat: "auto"
+
+# =============================================================================
+# GSLB CONFIGURATION (Optional)
+# =============================================================================
+
+enable_gslb: false
+
+gslb_config:
+  dns_server: "10.1.1.11"
+
+  dc1:
+    name: "DC1"
+    bigip_server:
+      name: "bigip1.f5lab.local"
+      address: "10.1.10.4"
+
+  wideip:
+    domain_name: "{{ dns1_name }}"
+    resource_record_type: "A"
+    pool_lb_mode: "ratio"

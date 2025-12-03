@@ -120,6 +120,28 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution8-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution8/postman/solution8-create.postman_collection.json)
 
+### Solution 9: OAuth Resource Server (Client)
+- **OAuth 2.0 Resource Server** - BIG-IP APM validates OAuth tokens from an Authorization Server
+- **OAuth Provider** - Connects to OAuth Authorization Server's OIDC discovery endpoint
+- **JWK Configuration** - Pre-shared key matching the Authorization Server
+- **JWT Configuration** - Manual JWT config for token validation
+- **JWT Provider List** - Links provider with JWT config
+- **OAuth Scope Agent** - Validates OAuth tokens in access policy
+- **Access Policy** - Simple flow: Start → OAuth Scope → Allow/Deny
+- **Application Deployment** - AS3-based HTTPS virtual server with backend pool
+
+**Use Case:** Protected API or application that requires OAuth token validation. Works in conjunction with Solution 8 (OAuth Authorization Server) to create a complete OAuth 2.0 ecosystem.
+
+**Prerequisites:** Solution 8 (OAuth Authorization Server) must be deployed and accessible at the configured OIDC discovery endpoint.
+
+**Authentication Flow:**
+1. Client presents OAuth access token
+2. OAuth Scope agent validates token against Authorization Server
+3. If valid, access granted to protected resource
+4. If invalid, access denied
+
+**Source:** [solution9-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution9/postman/solution9-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -656,6 +678,7 @@ bigip-apm-ansible/
 ├── deploy_apm_cert_kerb.yml          # Solution 6: Certificate + Kerberos SSO
 ├── deploy_apm_sideband.yml           # Solution 7: SAML with Sideband Communication
 ├── deploy_apm_oauth_as.yml           # Solution 8: OAuth Authorization Server
+├── deploy_apm_oauth_rs.yml           # Solution 9: OAuth Resource Server
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
@@ -664,6 +687,7 @@ bigip-apm-ansible/
 ├── delete_apm_cert_kerb.yml          # Solution 6: Interactive deletion playbook
 ├── delete_apm_sideband.yml           # Solution 7: Interactive deletion playbook
 ├── delete_apm_oauth_as.yml           # Solution 8: Interactive deletion playbook
+├── delete_apm_oauth_rs.yml           # Solution 9: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
@@ -677,7 +701,8 @@ bigip-apm-ansible/
 │   ├── solution5.yml                 # Solution 5 variables (SAML SP internal)
 │   ├── solution6.yml                 # Solution 6 variables (Certificate + Kerberos)
 │   ├── solution7.yml                 # Solution 7 variables (SAML + Sideband)
-│   └── solution8.yml                 # Solution 8 variables (OAuth Authorization Server)
+│   ├── solution8.yml                 # Solution 8 variables (OAuth Authorization Server)
+│   └── solution9.yml                 # Solution 9 variables (OAuth Resource Server)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -699,6 +724,7 @@ bigip-apm-ansible/
 │   ├── access_policy_solution7_vs1.yml # Solution 7 VS1 policy (send sideband)
 │   ├── access_policy_solution7_vs2.yml # Solution 7 VS2 policy (receive sideband)
 │   ├── access_policy_solution8.yml    # Solution 8 policy with OAuth authorization
+│   ├── access_policy_solution9.yml    # Solution 9 policy with OAuth scope validation
 │   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
 │   ├── import_ca_certificate.yml      # CA certificate import (Solution 6)
 │   ├── kerberos_sso.yml               # Kerberos SSO profile (Solution 6)
@@ -1224,6 +1250,90 @@ ansible-playbook deploy_apm_oauth_as.yml --tags policy
 ansible-playbook deploy_apm_oauth_as.yml --tags application,as3
 ```
 
+### Solution 9: OAuth Resource Server
+
+Deploy the OAuth Resource Server for protected applications that validate OAuth tokens:
+
+```bash
+ansible-playbook deploy_apm_oauth_rs.yml
+```
+
+**Prerequisites:**
+- Solution 8 (OAuth Authorization Server) must be deployed and accessible
+- The OAuth AS OIDC discovery endpoint must be reachable from BIG-IP
+
+**What Gets Deployed:**
+- **OAuth Provider:**
+  - Connects to OAuth Authorization Server's OIDC endpoint
+  - Discovers token validation endpoints
+
+- **JWK Configuration:**
+  - Pre-shared key matching the Authorization Server
+  - HS256 signing algorithm
+
+- **JWT Configuration:**
+  - Manual JWT config with issuer and signing algorithms
+  - Links to JWK for token validation
+
+- **JWT Provider List:**
+  - Associates OAuth provider with JWT config
+  - Required for OAuth scope agent
+
+- **OAuth Client Application:**
+  - Client configuration for OAuth flow
+  - Redirect URIs for callback handling
+
+- **Access Policy:**
+  - OAuth Scope agent for token validation
+  - Simple flow: Start → OAuth Scope → Allow/Deny
+
+- **AS3 Application:**
+  - HTTPS virtual server with OAuth protection
+  - Backend pool for protected application
+
+**Configuration Variables** (vars/solution9.yml):
+```yaml
+# Virtual Server Names
+vs1_name: "solution9"
+dns1_name: "solution9.acme.com"
+
+# Partition
+partition_name: "solution9"
+
+# OAuth Authorization Server Reference
+oauth_as_dns: "as.acme.com"
+
+# JWK Configuration (must match AS)
+jwk_config:
+  alg_type: "HS256"
+  key_id: "lab"
+  shared_secret: "secret"
+
+# AS3 Virtual Address
+as3_config:
+  virtual_address: "10.1.10.109"
+  pool_members:
+    - address: "10.1.20.6"
+      port: 80
+```
+
+**Deploy Specific Components (Tags):**
+```bash
+# Deploy only OAuth configuration
+ansible-playbook deploy_apm_oauth_rs.yml --tags oauth,jwt
+
+# Deploy only access policy
+ansible-playbook deploy_apm_oauth_rs.yml --tags policy
+
+# Deploy only AS3 application
+ansible-playbook deploy_apm_oauth_rs.yml --tags application,as3
+```
+
+**Important Notes:**
+- The JWT provider list requires the OAuth provider to have a manual JWT config attached
+- When OIDC discovery fails (AS not reachable), the playbook creates a manual JWT config
+- The shared secret must match the JWK configured on the Authorization Server
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -1407,6 +1517,29 @@ ansible-playbook delete_apm_oauth_as.yml
 - JWK configuration
 - AD AAA server, pool, and node
 - GSLB configuration (if deployed)
+
+### Remove Solution 9 (OAuth Resource Server)
+
+To remove Solution 9 deployment:
+
+```bash
+ansible-playbook delete_apm_oauth_rs.yml
+```
+
+**Deletes:**
+- AS3 application tenant (solution9)
+- Access profile and access policy
+- All policy items and agents (OAuth scope, endings)
+- All customization groups
+- OAuth client application
+- JWT provider list
+- Manual JWT configuration
+- Auto JWT configuration (if created)
+- JWK configuration
+- OAuth provider
+- CA certificate (if not used by other configurations)
+
+**Note:** This does NOT delete Solution 8 (OAuth AS) - delete that separately if needed.
 
 ### Automated Cleanup (No Confirmation)
 
@@ -1810,7 +1943,18 @@ tail -f /var/log/restjavad.0.log
 - ✅ GSLB Configuration (optional, 6 API calls)
 - **Subtotal: 35+ API calls**
 
-**Grand Total: 350+ API calls automated across all solutions**
+#### Solution 9: OAuth Resource Server (Client)
+- ✅ CA Certificate upload and installation (2 API calls)
+- ✅ JWK Configuration (1 API call)
+- ✅ JWT Configuration (1 API call)
+- ✅ OAuth Provider (1 API call)
+- ✅ JWT Provider List (1 API call)
+- ✅ OAuth Client Application (2 API calls with customization)
+- ✅ Access Policy with OAuth Scope (15+ API calls with transaction)
+- ✅ AS3 Application Deployment (1 API call)
+- **Subtotal: 25+ API calls**
+
+**Grand Total: 380+ API calls automated across all solutions**
 
 ### Not Included (from original collections)
 
@@ -1933,6 +2077,19 @@ For issues or questions:
 This playbook is provided as-is for automation purposes. Test thoroughly before production use.
 
 ## Changelog
+
+### Version 2.4.0
+- **Solution 9: OAuth Resource Server (Client)**
+  - BIG-IP APM as OAuth 2.0 Resource Server
+  - OAuth Provider connecting to Authorization Server's OIDC endpoint
+  - JWK Configuration with pre-shared key (HS256)
+  - Manual JWT Configuration for token validation
+  - JWT Provider List linking provider to JWT config
+  - OAuth Client Application with redirect URIs
+  - Access policy: Start → OAuth Scope → Allow/Deny
+  - Full deployment and cleanup playbooks
+- Prerequisites: Solution 8 (OAuth AS) must be deployed first
+- Updated API call counts: 380+ API calls across all solutions
 
 ### Version 2.3.0
 - **Solution 8: OAuth Authorization Server with AD Authentication**
