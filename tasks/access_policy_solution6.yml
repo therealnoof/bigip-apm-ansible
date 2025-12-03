@@ -281,7 +281,7 @@
           type: "{{ policy_items.set_variables.agent_type }}"
       rules:
         - caption: "fallback"
-          nextItem: "{{ policy_items.set_variables.next_item }}"
+          nextItem: "{{ policy_items.set_variables.nextItem }}"
     status_code: [200, 201]
     validate_certs: no
     timeout: 60
@@ -335,7 +335,7 @@
           type: "{{ policy_items.upn_extract.agent_type }}"
       rules:
         - caption: "fallback"
-          nextItem: "{{ policy_items.upn_extract.next_item }}"
+          nextItem: "{{ policy_items.upn_extract.nextItem }}"
     status_code: [200, 201]
     validate_certs: no
     timeout: 60
@@ -411,7 +411,7 @@
       loop: "{{ policy_items.entry.loop }}"
       rules:
         - caption: "fallback"
-          nextItem: "{{ policy_items.entry.next_item }}"
+          nextItem: "{{ policy_items.entry.nextItem }}"
     status_code: [200, 201]
     validate_certs: no
     timeout: 60
