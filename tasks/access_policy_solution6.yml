@@ -425,8 +425,8 @@
       - "Access Policy Name: {{ access_policy.name }}"
       - "Default Ending: {{ access_policy.default_ending }}"
       - "Start Item: {{ access_policy.start_item }}"
-      - "Items array:"
-      - "{{ access_policy.items }}"
+      - "Policy items array:"
+      - "{{ access_policy.policy_items }}"
 
 - name: Prepare access policy body
   set_fact:
@@ -438,7 +438,7 @@
       oneshotMacro: "{{ access_policy.oneshot_macro }}"
       startItem: "{{ access_policy.start_item }}"
       type: "{{ access_policy.type }}"
-      items: "{{ access_policy.items }}"
+      items: "{{ access_policy.policy_items }}"
 
 - name: Debug - Show complete JSON body that will be sent
   debug:

@@ -298,7 +298,7 @@ access_policy:
   oneshot_macro: "false"
   start_item: "{{ vs1_name }}-psp_ent"
   type: "access-policy"
-  items:
+  policy_items:
     - name: "{{ vs1_name }}-psp_act_ldap_query"
       partition: "Common"
     - name: "{{ vs1_name }}-psp_act_ocsp_auth"
