@@ -359,8 +359,11 @@ as3_config:
   client_ssl_profile:
     authentication_invite_ca: "/Common/ca.f5lab.local"
     authentication_trust_ca: "/Common/ca.f5lab.local"
-    certificate: "/Common/acme.com-wildcard"
-    private_key: "/Common/acme.com-wildcard"
+    # IMPORTANT: Update these certificate and key names to match your BIG-IP configuration
+    # Default self-signed certificate is used below. Replace with your production certificates.
+    # To list available certificates: tmsh list sys crypto cert
+    certificate: "/Common/default.crt"
+    private_key: "/Common/default.key"
 
 # Feature Flags
 deploy_application_via_as3: true
