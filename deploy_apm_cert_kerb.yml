@@ -67,14 +67,9 @@
     - name: Deploy application using AS3
       when: deploy_application_via_as3 | default(true) | bool
       block:
-        - name: Create AS3 declaration for Solution 6
-          uri:
-            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
-            method: POST
-            user: "{{ bigip_username }}"
-            password: "{{ bigip_password }}"
-            body_format: json
-            body:
+        - name: Prepare AS3 declaration
+          set_fact:
+            as3_declaration:
               class: "ADC"
               action: "deploy"
               persist: true
@@ -116,6 +111,15 @@
                       members: "{{ as3_config.pool_members | map('regex_replace', '^(.+):([0-9]+)$', '{\"serverAddresses\": [\"\\1\"], \"servicePort\": \\2}') | map('from_json') | list }}"
                       monitors:
                         - "icmp"
+
+        - name: Create AS3 declaration for Solution 6
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            body_format: json
+            body: "{{ as3_declaration }}"
             status_code: [200, 201]
             validate_certs: no
             timeout: 120
