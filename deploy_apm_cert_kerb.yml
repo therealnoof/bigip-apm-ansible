@@ -77,20 +77,22 @@
               class: "Application"
               template: "generic"
 
-        - name: Add virtual server to application
+        - name: Build virtual server config with proper types
           set_fact:
-            app_config: "{{ app_config | combine({vs1_name: vs_config}) }}"
-          vars:
             vs_config:
               class: "Service_HTTPS"
               virtualAddresses:
                 - "{{ as3_config.virtual_address }}"
-              virtualPort: "{{ as3_config.virtual_port | int }}"
+              virtualPort: 443
               serverTLS: "{{ vs1_name }}-clientssl"
               pool: "iis-pool"
               snat: "auto"
               profileAccess:
                 bigip: "/Common/{{ partition_name }}-psp"
+
+        - name: Add virtual server to application
+          set_fact:
+            app_config: "{{ app_config | combine({vs1_name: vs_config}) }}"
 
         - name: Add TLS server profile to application
           set_fact:
