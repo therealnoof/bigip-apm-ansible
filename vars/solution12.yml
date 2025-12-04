@@ -20,6 +20,33 @@
 #   - Variable Assignment: Sets domain for SSO
 #
 # =============================================================================
+# DEPENDENCIES AND PREREQUISITES
+# =============================================================================
+#
+# BIG-IP REQUIREMENTS:
+#   - BIG-IP version 14.1+ recommended (13.1+ minimum)
+#   - APM module provisioned and licensed
+#   - AS3 extension installed (3.14.0+)
+#   - Sufficient APM sessions licensed for expected user count
+#
+# NETWORK REQUIREMENTS:
+#   - BIG-IP must be able to reach AD server on port 389 (LDAP) or 636 (LDAPS)
+#   - BIG-IP must be able to reach RDP server on port 3389 (or custom port)
+#   - Clients must be able to reach BIG-IP VIP on port 443
+#   - DNS resolution for virtual server hostname
+#
+# BACKEND SERVER REQUIREMENTS:
+#   - Windows RDP server (RDSH, RDS, or standard RDP)
+#   - RDP enabled and configured to accept connections
+#   - User accounts must exist in Active Directory
+#   - Network Level Authentication (NLA) may need to be disabled for SSO
+#
+# BROWSER REQUIREMENTS (for HTML5 RDP):
+#   - Modern browser with WebSocket support
+#   - JavaScript enabled
+#   - No RDP client required on user workstation
+#
+# =============================================================================
 # PRODUCTION DEPLOYMENT CHECKLIST
 # =============================================================================
 # Before deploying to production, review and update the following:
@@ -28,26 +55,70 @@
 #    - Set wildcard_cert.use_self_signed: false
 #    - Import a proper CA-signed certificate before deployment
 #    - Update wildcard_cert.name to match your imported certificate
+#    - Ensure certificate CN/SAN matches dns1_name
 #
 # 2. ACTIVE DIRECTORY
-#    - Update ad_server.ip to your AD server
-#    - Update ad_server.domain to your AD domain
-#    - Update ad_server.admin_name and admin_password
-#    - Update variable_assign.domain to your domain
+#    - Update ad_server.ip to your AD server (or load balancer VIP)
+#    - Update ad_server.domain to your AD domain (FQDN)
+#    - Update ad_server.admin_name with service account (not personal account)
+#    - Use Ansible Vault for ad_server.admin_password
+#    - Update variable_assign.domain to your domain (UPPERCASE recommended)
+#    - Consider using LDAPS (port 636) for encrypted AD communication
 #
 # 3. RDP BACKEND
-#    - Update rdp_resource.ip to your RDP server
+#    - Update rdp_resource.ip to your RDP server/farm
 #    - Update rdp_resource.port if not using 3389
-#    - Configure appropriate server_type (rdsh, rdp, etc.)
+#    - Configure server_type based on your environment:
+#      * "rdsh" - Remote Desktop Session Host (terminal services)
+#      * "rdp"  - Standard Windows RDP
+#      * "vdi"  - Virtual Desktop Infrastructure
+#    - Consider enable_serverside_ssl: "enabled" for encrypted RDP
 #
 # 4. DNS AND NETWORKING
-#    - Update dns1_name to your actual DNS name
-#    - Update as3_config.virtual_address to your VIP
+#    - Update dns1_name to your actual DNS name (e.g., rdp.company.com)
+#    - Update as3_config.virtual_address to your assigned VIP
+#    - Ensure firewall rules allow 443 inbound to VIP
+#    - Ensure BIG-IP can reach AD and RDP servers
 #
-# 5. SECURITY
-#    - Set validate_certs: yes for SSL verification
-#    - Review session timeout values
+# 5. SECURITY HARDENING
+#    - Set validate_certs: yes for SSL certificate verification
+#    - Review and reduce session timeout values for security
 #    - Consider enabling client certificate authentication
+#    - Review AD authentication settings (lockout, password expiry)
+#    - Enable APM logging for audit trail
+#    - Consider IP geolocation restrictions
+#
+# 6. HIGH AVAILABILITY
+#    - Deploy on BIG-IP HA pair for redundancy
+#    - Sync APM policies between HA peers
+#    - Consider multiple RDP backend servers with load balancing
+#
+# =============================================================================
+# KNOWN LIMITATIONS AND CAVEATS
+# =============================================================================
+#
+# AS3 LIMITATIONS:
+#   - AS3 does not support profileVDI property
+#   - AS3 does not support profileConnectivity property
+#   - Virtual server profiles are added via PATCH after AS3 deployment
+#   - This means AS3 "no change" detection may not work correctly
+#
+# RDP SSO CONSIDERATIONS:
+#   - SSO uses session.logon.last.* variables from logon page
+#   - Domain must be set via variable assignment for SSO to work
+#   - NLA (Network Level Authentication) on RDP server may block SSO
+#   - Consider disabling NLA or using CredSSP delegation
+#
+# PERFORMANCE CONSIDERATIONS:
+#   - HTML5 RDP uses WebSocket which may increase BIG-IP CPU usage
+#   - Consider dedicated APM virtual server for RDP traffic
+#   - Monitor APM session count against license limits
+#
+# BROWSER COMPATIBILITY:
+#   - HTML5 RDP works best in Chrome, Firefox, Edge
+#   - Internet Explorer may have limited functionality
+#   - Mobile browsers may have reduced experience
+#
 #
 # =============================================================================
 # BIG-IP Connection Settings
@@ -76,11 +147,21 @@ custom_type: "modern"
 # ACTIVE DIRECTORY CONFIGURATION
 # =============================================================================
 ad_server:
-  ip: "10.1.20.7"              # PROD: Your AD server IP
-  domain: "f5lab.local"         # PROD: Your AD domain
-  admin_name: "admin"           # PROD: AD service account
-  admin_password: "admin"       # PROD: Use vault for passwords!
-  pool_port: 0                  # Standard AD port
+  # LAB:  Uses lab AD server IP
+  # PROD: Update to your AD server IP or load balancer VIP
+  ip: "10.1.20.7"
+  # LAB:  Uses lab domain
+  # PROD: Update to your AD domain FQDN
+  domain: "f5lab.local"
+  # LAB:  Uses simple admin account
+  # PROD: Use dedicated service account with minimal permissions
+  admin_name: "admin"
+  # LAB:  Plain text password (acceptable for lab only)
+  # PROD: Use Ansible Vault: "{{ vault_ad_password }}"
+  admin_password: "admin"
+  # Standard AD port (0 = default LDAP 389)
+  # PROD: Consider port 636 for LDAPS
+  pool_port: 0
 
 # =============================================================================
 # VARIABLE ASSIGNMENT
@@ -96,14 +177,28 @@ variable_assign:
 rdp_resource:
   name: "{{ vs1_name }}-vdi-resource"
   partition: "Common"
-  ip: "10.1.20.6"               # PROD: Your RDP server IP
-  port: 3389                    # Standard RDP port
-  auto_logon: "enabled"         # Enable SSO to RDP
-  server_type: "rdsh"           # rdsh = RD Session Host, rdp = standard RDP
-  enable_serverside_ssl: "disabled"  # Enable if RDP server uses SSL
+  # LAB:  Uses lab RDP server
+  # PROD: Update to your RDP server IP or RDS farm VIP
+  ip: "10.1.20.6"
+  # Standard RDP port
+  # PROD: Update if using non-standard port
+  port: 3389
+  # LAB:  SSO enabled for seamless login
+  # PROD: Keep enabled for best user experience
+  auto_logon: "enabled"
+  # Server type options:
+  #   "rdsh" - Remote Desktop Session Host (terminal services)
+  #   "rdp"  - Standard Windows RDP server
+  #   "vdi"  - Virtual Desktop Infrastructure
+  # PROD: Select based on your RDP environment
+  server_type: "rdsh"
+  # LAB:  SSL disabled (RDP server not configured for SSL)
+  # PROD: Consider "enabled" for encrypted RDP connection
+  enable_serverside_ssl: "disabled"
   location_specific: "true"
   user_defined_dst: "disabled"
   # SSO credential sources (from logon page session variables)
+  # These map the APM session variables to RDP credentials
   username_source: "session.logon.last.username"
   password_source: "session.logon.last.password"
   domain_source: "session.logon.last.domain"
