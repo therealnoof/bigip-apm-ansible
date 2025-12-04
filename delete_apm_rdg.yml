@@ -1,0 +1,550 @@
+---
+# Solution 12: Remote Desktop Gateway Cleanup
+# Removes all components created by deploy_apm_rdg.yml
+#
+# Usage:
+#   ansible-playbook delete_apm_rdg.yml
+#   ansible-playbook delete_apm_rdg.yml -e "confirm_delete=true"
+#
+# This playbook removes (in reverse order):
+# - AS3 Application tenant
+# - PSP Access Profile and Policy
+# - RDG Access Profile and Policy
+# - Policy items and agents
+# - Customization groups
+# - Webtop
+# - RDP Resource
+# - AD AAA Server, Pool, and Node
+# - Self-signed certificate (if created)
+
+- name: Delete Remote Desktop Gateway (Solution 12)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution12.yml
+
+  vars:
+    # Confirmation prompt
+    confirm_delete: false
+
+  tasks:
+    # =========================================================================
+    # CONFIRMATION PROMPT
+    # =========================================================================
+
+    - name: Confirm deletion
+      pause:
+        prompt: |
+          WARNING: This will delete all Solution 12 (Remote Desktop Gateway) components:
+          - AS3 Tenant: {{ partition_name }}
+          - PSP Access Profile: {{ vs1_name }}-psp
+          - RDG Access Profile: {{ vs1_name }}-rdg
+          - RDP Resource: {{ rdp_resource.name }}
+          - Webtop: {{ webtop.name }}
+          - AD AAA Server: {{ vs1_name }}-ad-servers
+
+          Type 'yes' to continue
+      register: confirm_result
+      when: not confirm_delete
+
+    - name: Check confirmation
+      fail:
+        msg: "Deletion cancelled by user"
+      when:
+        - not confirm_delete
+        - confirm_result.user_input | default('') != 'yes'
+
+    # =========================================================================
+    # DELETE AS3 APPLICATION
+    # =========================================================================
+
+    - name: Delete AS3 application tenant
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404, 422]
+        timeout: 120
+      register: as3_delete
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 tenant {{ partition_name }} deletion: {{ 'deleted' if as3_delete.status in [200, 204] else 'not found or error' }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DELETE PSP ACCESS PROFILE
+    # =========================================================================
+
+    - name: Delete PSP access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - psp
+
+    - name: Delete PSP access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - psp
+
+    # =========================================================================
+    # DELETE RDG ACCESS PROFILE
+    # =========================================================================
+
+    - name: Delete RDG access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-rdg"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - rdg
+
+    - name: Delete RDG access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-rdg"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - rdg
+
+    # =========================================================================
+    # DELETE PSP POLICY ITEMS
+    # =========================================================================
+
+    - name: Delete PSP policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_ent"
+        - "{{ vs1_name }}-psp_act_logon_page"
+        - "{{ vs1_name }}-psp_act_active_directory_auth"
+        - "{{ vs1_name }}-psp_act_rdg_policy_assign"
+        - "{{ vs1_name }}-psp_act_variable_assign"
+        - "{{ vs1_name }}-psp_act_full_resource_assign"
+        - "{{ vs1_name }}-psp_end_allow"
+        - "{{ vs1_name }}-psp_end_deny"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - psp
+
+    # =========================================================================
+    # DELETE RDG POLICY ITEMS
+    # =========================================================================
+
+    - name: Delete RDG policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-rdg_ent"
+        - "{{ vs1_name }}-rdg_end_allow"
+        - "{{ vs1_name }}-rdg_end_deny"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - rdg
+
+    # =========================================================================
+    # DELETE PSP POLICY AGENTS
+    # =========================================================================
+
+    - name: Delete PSP logon page agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/logon-page/~Common~{{ vs1_name }}-psp_act_logon_page_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete PSP AD authentication agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory/~Common~{{ vs1_name }}-psp_act_active_directory_auth_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete PSP RDG policy assign agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign/~Common~{{ vs1_name }}-psp_act_rdg_policy_assign_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete PSP variable assign agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign/~Common~{{ vs1_name }}-psp_act_variable_assign_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete PSP resource assign agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign/~Common~{{ vs1_name }}-psp_act_full_resource_assign_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete PSP allow ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/~Common~{{ vs1_name }}-psp_end_allow_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    - name: Delete PSP deny ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/~Common~{{ vs1_name }}-psp_end_deny_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - agents
+
+    # =========================================================================
+    # DELETE RDG POLICY AGENTS
+    # =========================================================================
+
+    - name: Delete RDG allow ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/~Common~{{ vs1_name }}-rdg_end_allow_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - rdg
+
+    - name: Delete RDG deny ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/~Common~{{ vs1_name }}-rdg_end_deny_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - rdg
+
+    # =========================================================================
+    # DELETE PSP CUSTOMIZATION GROUPS
+    # =========================================================================
+
+    - name: Delete PSP customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_logout"
+        - "{{ vs1_name }}-psp_eps"
+        - "{{ vs1_name }}-psp_errormap"
+        - "{{ vs1_name }}-psp_framework_installation"
+        - "{{ vs1_name }}-psp_general_ui"
+        - "{{ vs1_name }}-psp_end_deny_ag"
+        - "{{ vs1_name }}-psp_act_logon_page_ag"
+        - "{{ vs1_name }}-psp_customization"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - customization
+
+    # =========================================================================
+    # DELETE RDG CUSTOMIZATION GROUPS
+    # =========================================================================
+
+    - name: Delete RDG customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-rdg_logout"
+        - "{{ vs1_name }}-rdg_eps"
+        - "{{ vs1_name }}-rdg_errormap"
+        - "{{ vs1_name }}-rdg_framework_installation"
+        - "{{ vs1_name }}-rdg_general_ui"
+        - "{{ vs1_name }}-rdg_webtop"
+        - "{{ vs1_name }}-rdg_end_deny_ag"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - rdg
+        - customization
+
+    # =========================================================================
+    # DELETE WEBTOP
+    # =========================================================================
+
+    - name: Delete webtop
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop/~{{ webtop.partition }}~{{ webtop.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - webtop
+
+    - name: Delete webtop customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~{{ webtop.partition }}~{{ webtop.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - webtop
+
+    # =========================================================================
+    # DELETE VDI AND CONNECTIVITY PROFILES
+    # =========================================================================
+
+    - name: Delete VDI profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/vdi/~Common~{{ vs1_name }}-vdi"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - vdi
+        - profile
+
+    - name: Delete connectivity profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/connectivity/~Common~{{ vs1_name }}-cp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - connectivity
+        - profile
+
+    - name: Delete PPP tunnel
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/net/tunnels/tunnel/~Common~{{ vs1_name }}-tunnel"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - connectivity
+        - tunnel
+
+    - name: Delete connectivity customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ vs1_name }}_secure_access_client_customization"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - connectivity
+        - customization
+
+    # =========================================================================
+    # DELETE RDP RESOURCE
+    # =========================================================================
+
+    - name: Delete RDP resource
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/remote-desktop/~{{ rdp_resource.partition }}~{{ rdp_resource.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 400, 404]
+      ignore_errors: yes
+      tags:
+        - rdp
+        - resource
+
+    # =========================================================================
+    # DELETE AD AAA CONFIGURATION
+    # =========================================================================
+
+    - name: Delete AD AAA server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ vs1_name }}-ad-servers"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    - name: Delete AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ vs1_name }}-ad-servers"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    - name: Delete AD server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ ad_server.ip }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 400, 404]
+      ignore_errors: yes
+      tags:
+        - aaa
+        - ad
+
+    # =========================================================================
+    # DELETE CERTIFICATE (if self-signed was created)
+    # =========================================================================
+
+    - name: Delete self-signed certificate
+      block:
+        - name: Delete certificate
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ wildcard_cert.name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200, 404]
+
+        - name: Delete private key
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key/~Common~{{ wildcard_cert.name }}"
+            method: DELETE
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            status_code: [200, 404]
+
+      when: wildcard_cert.use_self_signed | default(false) | bool
+      tags:
+        - certificate
+        - ssl
+
+    # =========================================================================
+    # DELETION SUMMARY
+    # =========================================================================
+
+    - name: Display deletion summary
+      debug:
+        msg: |
+          ============================================================
+          Remote Desktop Gateway Cleanup Complete
+          ============================================================
+
+          Deleted Components:
+          - AS3 Tenant: {{ partition_name }}
+          - PSP Access Profile: {{ vs1_name }}-psp
+          - RDG Access Profile: {{ vs1_name }}-rdg
+          - RDP Resource: {{ rdp_resource.name }}
+          - Webtop: {{ webtop.name }}
+          - AD AAA Server: {{ vs1_name }}-ad-servers
+          - AD Pool: {{ vs1_name }}-ad-servers
+          - AD Node: {{ ad_server.ip }}
+          {% if wildcard_cert.use_self_signed | default(false) %}
+          - Certificate: {{ wildcard_cert.name }}
+          {% endif %}
+
+          ============================================================
+      tags:
+        - always

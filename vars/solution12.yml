@@ -1,0 +1,254 @@
+---
+# =============================================================================
+# SOLUTION 12: Remote Desktop Gateway (RDG) with AD Authentication
+# =============================================================================
+#
+# This solution implements HTML5-based Remote Desktop access through BIG-IP APM
+# with Active Directory authentication.
+#
+# Policy Flow:
+#   Start → Logon Page → AD Auth → RDG Policy Assign → Variable Assign
+#                                           → Resource Assign → Allow
+#                            ↓ (Failed)
+#                          Deny
+#
+# Components:
+#   - RDP Resource: Remote Desktop connection to backend RDP server
+#   - RDG Profile: Remote Desktop Gateway policy (rdg-rap type)
+#   - Per-Session Policy: Main access policy with AD authentication
+#   - Webtop: Full webtop for presenting RDP resources
+#   - Variable Assignment: Sets domain for SSO
+#
+# =============================================================================
+# PRODUCTION DEPLOYMENT CHECKLIST
+# =============================================================================
+# Before deploying to production, review and update the following:
+#
+# 1. CERTIFICATES (CRITICAL)
+#    - Set wildcard_cert.use_self_signed: false
+#    - Import a proper CA-signed certificate before deployment
+#    - Update wildcard_cert.name to match your imported certificate
+#
+# 2. ACTIVE DIRECTORY
+#    - Update ad_server.ip to your AD server
+#    - Update ad_server.domain to your AD domain
+#    - Update ad_server.admin_name and admin_password
+#    - Update variable_assign.domain to your domain
+#
+# 3. RDP BACKEND
+#    - Update rdp_resource.ip to your RDP server
+#    - Update rdp_resource.port if not using 3389
+#    - Configure appropriate server_type (rdsh, rdp, etc.)
+#
+# 4. DNS AND NETWORKING
+#    - Update dns1_name to your actual DNS name
+#    - Update as3_config.virtual_address to your VIP
+#
+# 5. SECURITY
+#    - Set validate_certs: yes for SSL verification
+#    - Review session timeout values
+#    - Consider enabling client certificate authentication
+#
+# =============================================================================
+# BIG-IP Connection Settings
+# =============================================================================
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no  # PRODUCTION: Set to 'yes' for SSL verification
+# =============================================================================
+
+# =============================================================================
+# NAMING CONFIGURATION
+# =============================================================================
+partition_name: "solution12"
+path_name: "solution12"
+
+# Virtual server and DNS names
+vs1_name: "solution12"
+dns1_name: "solution12.acme.com"
+
+# Customization type (modern or standard)
+custom_type: "modern"
+
+# =============================================================================
+# ACTIVE DIRECTORY CONFIGURATION
+# =============================================================================
+ad_server:
+  ip: "10.1.20.7"              # PROD: Your AD server IP
+  domain: "f5lab.local"         # PROD: Your AD domain
+  admin_name: "admin"           # PROD: AD service account
+  admin_password: "admin"       # PROD: Use vault for passwords!
+  pool_port: 0                  # Standard AD port
+
+# =============================================================================
+# VARIABLE ASSIGNMENT
+# =============================================================================
+# Domain to set for RDP SSO - must match your AD domain
+variable_assign:
+  domain: "F5LAB.LOCAL"         # PROD: Your domain (uppercase recommended)
+
+# =============================================================================
+# RDP RESOURCE CONFIGURATION
+# =============================================================================
+# Configuration for the Remote Desktop resource
+rdp_resource:
+  name: "{{ vs1_name }}-vdi-resource"
+  partition: "Common"
+  ip: "10.1.20.6"               # PROD: Your RDP server IP
+  port: 3389                    # Standard RDP port
+  auto_logon: "enabled"         # Enable SSO to RDP
+  server_type: "rdsh"           # rdsh = RD Session Host, rdp = standard RDP
+  enable_serverside_ssl: "disabled"  # Enable if RDP server uses SSL
+  location_specific: "true"
+  user_defined_dst: "disabled"
+  # SSO credential sources (from logon page session variables)
+  username_source: "session.logon.last.username"
+  password_source: "session.logon.last.password"
+  domain_source: "session.logon.last.domain"
+
+# =============================================================================
+# WEBTOP CONFIGURATION
+# =============================================================================
+webtop:
+  name: "{{ vs1_name }}-webtop"
+  partition: "Common"
+  type: "full"
+  minimize_to_tray: "false"
+
+# =============================================================================
+# RDG (REMOTE DESKTOP GATEWAY) PROFILE
+# =============================================================================
+# This is a separate access profile with type "rdg-rap" for RDP gateway
+rdg_profile:
+  name: "{{ vs1_name }}-rdg"
+  partition: "Common"
+  type: "rdg-rap"               # Remote Desktop Gateway RAP type
+  default_language: "en"
+  accept_languages:
+    - "en"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  max_session_timeout: 604800
+  log_settings:
+    - "/Common/default-log-setting"
+
+# =============================================================================
+# MAIN ACCESS PROFILE CONFIGURATION
+# =============================================================================
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  type: "all"
+  default_language: "en"
+  accept_languages:
+    - "en"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  max_session_timeout: 604800
+  log_settings:
+    - "/Common/default-log-setting"
+
+# =============================================================================
+# LOGON PAGE CONFIGURATION
+# =============================================================================
+logon_page:
+  type: "form-based"
+  split_username: "false"
+  fields:
+    - name: "username"
+      type: "text"
+      modifiable: "true"
+      post_var: "username"
+      sess_var: "username"
+    - name: "password"
+      type: "password"
+      modifiable: "true"
+      post_var: "password"
+      sess_var: "password"
+
+# =============================================================================
+# AD AUTHENTICATION AGENT CONFIGURATION
+# =============================================================================
+ad_auth_agent:
+  auth_max_logon_attempt: 3
+  max_pwd_reset_attempt: 3
+  pwd_expiry_warn_days: 0
+  fetch_nested_groups: "false"
+  fetch_primary_group: "false"
+  pwd_complexity_check: "false"
+  show_extended_error: "false"
+  hints: "false"
+  upn: "false"
+  type: "auth"
+
+# =============================================================================
+# CUSTOMIZATION GROUPS
+# =============================================================================
+# Main PSP customization groups
+psp_customization_groups:
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+# RDG profile customization groups
+rdg_customization_groups:
+  - name: "{{ vs1_name }}-rdg_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-rdg_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-rdg_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-rdg_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-rdg_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+# =============================================================================
+# WILDCARD CERTIFICATE
+# =============================================================================
+# Certificate for HTTPS virtual server
+#
+# LAB MODE (use_self_signed: true):
+#   - Auto-generates a self-signed certificate
+#   - WARNING: Self-signed certs cause browser warnings
+#
+# PRODUCTION MODE (use_self_signed: false):
+#   - Requires certificate pre-imported to BIG-IP
+#   - Update 'name' to match your imported certificate name
+#
+wildcard_cert:
+  name: "acme.com-wildcard"      # PROD: Change to your imported cert name
+  use_self_signed: true          # PROD: Set to 'false'
+  common_name: "*.acme.com"      # Only used for self-signed generation
+
+# =============================================================================
+# AS3 CONFIGURATION
+# =============================================================================
+# PROD: Update virtual_address to your assigned VIP
+as3_config:
+  virtual_address: "10.1.10.112"  # PROD: Your virtual server IP
+  virtual_port: 443
+  snat: "auto"
+  # Pool targets the AD server for health monitoring
+  pool_members:
+    - address: "10.1.20.7"        # AD server for health check
+      port: 3389                   # RDP port for monitoring

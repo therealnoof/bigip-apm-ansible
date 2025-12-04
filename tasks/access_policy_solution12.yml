@@ -1,0 +1,1021 @@
+---
+###############################################
+# Solution 12: Remote Desktop Gateway Access Policy
+#
+# This creates TWO access policies:
+# 1. RDG Policy (rdg-rap type) - Simple Allow policy for RDP gateway
+# 2. PSP (Per-Session Policy) - Main policy with AD auth
+#
+# PSP Flow:
+#   Start → Logon Page → AD Auth → RDG Policy Assign → Variable Assign
+#                                           → Resource Assign → Allow
+#                            ↓ (Failed)
+#                          Deny
+###############################################
+
+# =========================================================================
+# PART 1: CREATE RDG POLICY (Remote Desktop Gateway)
+# =========================================================================
+# This is a simple policy that just allows access - the main auth is in PSP
+
+- name: Create RDG transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+  register: rdg_transaction_result
+  tags:
+    - policy
+    - rdg
+
+- name: Store RDG transaction ID
+  set_fact:
+    rdg_trans_id: "{{ rdg_transaction_result.json.transId }}"
+  tags:
+    - policy
+    - rdg
+
+- name: Display RDG transaction ID
+  debug:
+    msg: "RDG Transaction ID: {{ rdg_trans_id }}"
+  tags:
+    - policy
+    - rdg
+
+# Create RDG customization groups
+- name: Create RDG customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 409]
+  loop: "{{ rdg_customization_groups }}"
+  tags:
+    - policy
+    - rdg
+
+# Create RDG webtop customization
+- name: Create RDG webtop customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_webtop"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "webtop"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG deny ending customization
+- name: Create RDG deny ending customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_end_deny_ag"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "logout"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG allow ending agent
+- name: Create RDG allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_end_allow_ag"
+      partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG deny ending agent
+- name: Create RDG deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_end_deny_ag"
+      partition: "Common"
+      customizationGroup: "/Common/{{ vs1_name }}-rdg_end_deny_ag"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG allow ending policy item
+- name: Create RDG allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_end_allow"
+      partition: "Common"
+      caption: "Allow"
+      color: 1
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-rdg_end_allow_ag"
+          partition: "Common"
+          type: "ending-allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG deny ending policy item
+- name: Create RDG deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_end_deny"
+      partition: "Common"
+      caption: "Deny"
+      color: 2
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-rdg_end_deny_ag"
+          partition: "Common"
+          type: "ending-deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG start policy item (goes directly to allow)
+- name: Create RDG start policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg_ent"
+      partition: "Common"
+      caption: "Start"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-rdg_end_allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG access policy
+- name: Create RDG access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg"
+      partition: "Common"
+      defaultEnding: "{{ vs1_name }}-rdg_end_deny"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "{{ vs1_name }}-rdg_ent"
+      type: "access-policy"
+      items:
+        - name: "{{ vs1_name }}-rdg_end_allow"
+          partition: "Common"
+        - name: "{{ vs1_name }}-rdg_end_deny"
+          partition: "Common"
+        - name: "{{ vs1_name }}-rdg_ent"
+          partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Create RDG access profile (rdg-rap type)
+- name: Create RDG access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ rdg_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-rdg"
+      partition: "Common"
+      acceptLanguages: "{{ rdg_profile.accept_languages }}"
+      accessPolicy: "/Common/{{ vs1_name }}-rdg"
+      customizationGroup: "/Common/{{ vs1_name }}-rdg_logout"
+      epsGroup: "/Common/{{ vs1_name }}-rdg_eps"
+      errormapGroup: "/Common/{{ vs1_name }}-rdg_errormap"
+      frameworkInstallationGroup: "/Common/{{ vs1_name }}-rdg_framework_installation"
+      generalUiGroup: "/Common/{{ vs1_name }}-rdg_general_ui"
+      accessPolicyTimeout: "{{ rdg_profile.access_policy_timeout }}"
+      defaultLanguage: "{{ rdg_profile.default_language }}"
+      httponlyCookie: "false"
+      inactivityTimeout: "{{ rdg_profile.inactivity_timeout }}"
+      logoutUriTimeout: 5
+      maxConcurrentSessions: 0
+      maxConcurrentUsers: 0
+      maxFailureDelay: 5
+      maxInProgressSessions: 128
+      maxSessionTimeout: "{{ rdg_profile.max_session_timeout }}"
+      minFailureDelay: 2
+      modifiedSinceLastPolicySync: "false"
+      persistentCookie: "false"
+      restrictToSingleClientIp: "false"
+      scope: "profile"
+      secureCookie: "true"
+      type: "rdg-rap"
+      useHttp_503OnError: "false"
+      userIdentityMethod: "http"
+      logSettings: "{{ rdg_profile.log_settings }}"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - rdg
+
+# Commit RDG transaction
+- name: Commit RDG transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ rdg_trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 409]
+  register: rdg_commit_result
+  tags:
+    - policy
+    - rdg
+
+- name: Display RDG transaction commit result
+  debug:
+    msg: "RDG Transaction {{ rdg_trans_id }} committed: {{ rdg_commit_result.status }}"
+  tags:
+    - policy
+    - rdg
+
+# Apply RDG policy
+- name: Apply RDG access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-rdg"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200]
+  register: rdg_apply_result
+  tags:
+    - policy
+    - rdg
+
+- name: Display RDG policy apply result
+  debug:
+    msg: "RDG access policy {{ vs1_name }}-rdg applied successfully"
+  tags:
+    - policy
+    - rdg
+
+# =========================================================================
+# PART 2: CREATE PSP (Per-Session Policy) - Main Policy with AD Auth
+# =========================================================================
+
+- name: Create PSP transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+  register: psp_transaction_result
+  tags:
+    - policy
+    - psp
+
+- name: Store PSP transaction ID
+  set_fact:
+    psp_trans_id: "{{ psp_transaction_result.json.transId }}"
+  tags:
+    - policy
+    - psp
+
+- name: Display PSP transaction ID
+  debug:
+    msg: "PSP Transaction ID: {{ psp_trans_id }}"
+  tags:
+    - policy
+    - psp
+
+# Create PSP customization groups
+- name: Create PSP customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 409]
+  loop: "{{ psp_customization_groups }}"
+  tags:
+    - policy
+    - psp
+
+# Create PSP logon page customization
+- name: Create PSP logon page customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_logon_page_ag"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "logon"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create webtop customization group for PSP
+- name: Create PSP webtop customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_customization"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "webtop"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create PSP deny ending customization
+- name: Create PSP deny ending customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny_ag"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "logout"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create PSP allow ending agent
+- name: Create PSP allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_allow_ag"
+      partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create PSP deny ending agent
+- name: Create PSP deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny_ag"
+      partition: "Common"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create logon page agent
+- name: Create logon page agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/logon-page"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_logon_page_ag"
+      partition: "Common"
+      citrixClientAuthType: "domain-only"
+      cleanSessVar1: "false"
+      cleanSessVar2: "false"
+      cleanSessVar3: "false"
+      cleanSessVar4: "false"
+      cleanSessVar5: "false"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_act_logon_page_ag"
+      fieldModifiable1: "true"
+      fieldModifiable2: "true"
+      fieldModifiable3: "true"
+      fieldModifiable4: "true"
+      fieldModifiable5: "true"
+      fieldType2: "password"
+      fieldType3: "none"
+      fieldType4: "none"
+      fieldType5: "none"
+      fieldtype1: "text"
+      http_401AuthLevel: "none"
+      postVarName1: "username"
+      postVarName2: "password"
+      postVarName3: "field3"
+      postVarName4: "field4"
+      postVarName5: "field5"
+      sessVarName1: "username"
+      sessVarName2: "password"
+      sessVarName3: "field3"
+      sessVarName4: "field4"
+      sessVarName5: "field5"
+      splitUsername: "false"
+      type: "form-based"
+      vmwareViewLogonScreen: "windows-password"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create AD auth agent
+- name: Create AD authentication agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-active-directory"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_active_directory_auth_ag"
+      partition: "Common"
+      authMaxLogonAttempt: "{{ ad_auth_agent.auth_max_logon_attempt }}"
+      fetchNestedGroups: "{{ ad_auth_agent.fetch_nested_groups }}"
+      fetchPrimaryGroup: "{{ ad_auth_agent.fetch_primary_group }}"
+      hints: "{{ ad_auth_agent.hints }}"
+      maxPwdResetAttempt: "{{ ad_auth_agent.max_pwd_reset_attempt }}"
+      pwdComplexityCheck: "{{ ad_auth_agent.pwd_complexity_check }}"
+      pwdExpiryWarnDays: "{{ ad_auth_agent.pwd_expiry_warn_days }}"
+      server: "/Common/{{ vs1_name }}-ad-servers"
+      showExtendedError: "{{ ad_auth_agent.show_extended_error }}"
+      type: "{{ ad_auth_agent.type }}"
+      upn: "{{ ad_auth_agent.upn }}"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create RDG policy assign agent
+- name: Create RDG policy assign agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_rdg_policy_assign_ag"
+      partition: "Common"
+      type: "rdg-policy"
+      rules:
+        - accessProfile: "/Common/{{ vs1_name }}-rdg"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create variable assign agent
+- name: Create variable assign agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/variable-assign"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_variable_assign_ag"
+      partition: "Common"
+      type: "general"
+      variables:
+        - append: "false"
+          expression: "return {% raw %}{{% endraw %}{{ variable_assign.domain }}{% raw %}}{% endraw %}"
+          secure: "false"
+          varname: "session.logon.last.domain"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create resource assign agent (webtop + RDP)
+- name: Create resource assign agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_full_resource_assign_ag"
+      partition: "Common"
+      type: "general"
+      rules:
+        - remoteDesktopResources:
+            - "/Common/{{ vs1_name }}-vdi-resource"
+          webtop: "/Common/{{ vs1_name }}-webtop"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create PSP policy items
+- name: Create PSP allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+      caption: "Allow"
+      color: 1
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-psp_end_allow_ag"
+          partition: "Common"
+          type: "ending-allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create PSP deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+      caption: "Deny"
+      color: 2
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-psp_end_deny_ag"
+          partition: "Common"
+          type: "ending-deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create resource assign policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_full_resource_assign"
+      partition: "Common"
+      caption: "Advanced Resource Assign"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-psp_act_full_resource_assign_ag"
+          partition: "Common"
+          type: "resource-assign"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create variable assign policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_variable_assign"
+      partition: "Common"
+      caption: "Variable Assign"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-psp_act_variable_assign_ag"
+          partition: "Common"
+          type: "variable-assign"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_act_full_resource_assign"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create RDG policy assign policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_rdg_policy_assign"
+      partition: "Common"
+      caption: "RDG Policy Assign"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-psp_act_rdg_policy_assign_ag"
+          partition: "Common"
+          type: "resource-assign"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_act_variable_assign"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create AD auth policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_active_directory_auth"
+      partition: "Common"
+      caption: "AD Auth"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-psp_act_active_directory_auth_ag"
+          partition: "Common"
+          type: "aaa-active-directory"
+      rules:
+        - caption: "Successful"
+          expression: "expr {[mcget {session.ad.last.authresult}] == 1}"
+          nextItem: "/Common/{{ vs1_name }}-psp_act_rdg_policy_assign"
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create logon page policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_logon_page"
+      partition: "Common"
+      caption: "Logon Page"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-psp_act_logon_page_ag"
+          partition: "Common"
+          type: "logon-page"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_act_active_directory_auth"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: Create PSP start policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+      caption: "Start"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_act_logon_page"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create PSP access policy
+- name: Create PSP access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp"
+      partition: "Common"
+      defaultEnding: "{{ vs1_name }}-psp_end_deny"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "{{ vs1_name }}-psp_ent"
+      type: "access-policy"
+      items:
+        - name: "{{ vs1_name }}-psp_act_active_directory_auth"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_logon_page"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_full_resource_assign"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_variable_assign"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_act_rdg_policy_assign"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_allow"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_deny"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_ent"
+          partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Create PSP access profile
+- name: Create PSP access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp"
+      partition: "Common"
+      acceptLanguages: "{{ access_profile.accept_languages }}"
+      accessPolicy: "/Common/{{ vs1_name }}-psp"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_logout"
+      epsGroup: "/Common/{{ vs1_name }}-psp_eps"
+      errormapGroup: "/Common/{{ vs1_name }}-psp_errormap"
+      frameworkInstallationGroup: "/Common/{{ vs1_name }}-psp_framework_installation"
+      generalUiGroup: "/Common/{{ vs1_name }}-psp_general_ui"
+      accessPolicyTimeout: "{{ access_profile.access_policy_timeout }}"
+      defaultLanguage: "{{ access_profile.default_language }}"
+      httponlyCookie: "false"
+      inactivityTimeout: "{{ access_profile.inactivity_timeout }}"
+      logoutUriTimeout: 5
+      maxConcurrentSessions: 0
+      maxConcurrentUsers: 0
+      maxFailureDelay: 5
+      maxInProgressSessions: 128
+      maxSessionTimeout: "{{ access_profile.max_session_timeout }}"
+      minFailureDelay: 2
+      modifiedSinceLastPolicySync: "false"
+      persistentCookie: "false"
+      restrictToSingleClientIp: "false"
+      scope: "profile"
+      secureCookie: "true"
+      type: "all"
+      useHttp_503OnError: "false"
+      userIdentityMethod: "http"
+      logSettings: "{{ access_profile.log_settings }}"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# Commit PSP transaction
+- name: Commit PSP transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ psp_trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 409]
+  register: psp_commit_result
+  tags:
+    - policy
+    - psp
+
+- name: Display PSP transaction commit result
+  debug:
+    msg: "PSP Transaction {{ psp_trans_id }} committed: {{ psp_commit_result.status }}"
+  tags:
+    - policy
+    - psp
+
+# Apply PSP policy
+- name: Apply PSP access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200]
+  register: psp_apply_result
+  tags:
+    - policy
+    - psp
+
+- name: Display PSP policy apply result
+  debug:
+    msg: "PSP access policy {{ vs1_name }}-psp applied successfully"
+  tags:
+    - policy
+    - psp

@@ -3376,3 +3376,265 @@ wildcard_cert:
 
 ---
 
+## Solution 12: Remote Desktop Gateway (RDG) with AD Authentication
+
+Solution 12 implements HTML5-based Remote Desktop access through BIG-IP APM with Active Directory authentication.
+
+### Solution 12 Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| RDP Resource | Remote Desktop connection to backend RDP server |
+| RDG Profile | Access profile with rdg-rap type for RD Gateway |
+| PSP Profile | Main access policy with AD authentication |
+| VDI Profile | Virtual Desktop Infrastructure profile |
+| Connectivity Profile | PPP tunnel for VDI connections |
+| Webtop | Full webtop for presenting RDP resources |
+| Variable Assignment | Domain SSO via session variable |
+
+### Solution 12 Two-Policy Architecture
+
+Solution 12 requires TWO access policies:
+
+1. **RDG Policy (rdg-rap type)** - Simple allow policy for RD Gateway traffic
+2. **PSP Policy (all type)** - Main authentication policy with AD auth flow
+
+**Why Two Policies?**
+- The RDG policy handles Remote Desktop Gateway protocol traffic
+- The PSP policy handles user authentication and resource assignment
+- The PSP policy assigns the RDG policy via resource-assign agent
+
+### RDP Resource Creation
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/resource/remote-desktop/rdp
+Content-Type: application/json
+
+{
+  "name": "solution12-vdi-resource",
+  "partition": "Common",
+  "ip": "10.1.20.6",
+  "port": 3389,
+  "autoLogon": "enabled",
+  "serverType": "rdsh",
+  "enableServersideSsl": "disabled",
+  "locationSpecific": "true",
+  "userDefinedDst": "disabled",
+  "usernameSource": "session.logon.last.username",
+  "passwordSource": "session.logon.last.password",
+  "domainSource": "session.logon.last.domain"
+}
+```
+
+**Key Parameters:**
+- `serverType: "rdsh"` - RD Session Host (or "rdp" for standard RDP)
+- `autoLogon: "enabled"` - Enable SSO to RDP server
+- `usernameSource/passwordSource/domainSource` - Session variables for SSO
+
+### VDI Profile Creation
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/vdi/
+Content-Type: application/json
+
+{
+  "name": "solution12-vdi",
+  "partition": "Common",
+  "defaultsFrom": "/Common/vdi",
+  "vmwareViewUdpTransport": "pcoip"
+}
+```
+
+### PPP Tunnel Creation
+
+Required for connectivity profile:
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/net/tunnels/tunnel
+Content-Type: application/json
+
+{
+  "name": "solution12-tunnel",
+  "partition": "Common",
+  "profile": "/Common/ppp",
+  "autoLasthop": "default",
+  "idleTimeout": 300,
+  "localAddress": "any6",
+  "mode": "bidirectional",
+  "remoteAddress": "any6",
+  "tos": "preserve",
+  "usePmtu": "enabled"
+}
+```
+
+### Connectivity Profile Creation
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/connectivity/
+Content-Type: application/json
+
+{
+  "name": "solution12-cp",
+  "partition": "Common",
+  "defaultsFrom": "/Common/connectivity",
+  "customizationGroup": "/Common/solution12_secure_access_client_customization",
+  "tunnelName": "/Common/solution12-tunnel"
+}
+```
+
+### RDG Access Profile (rdg-rap type)
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/access
+Content-Type: application/json
+X-F5-REST-Coordination-Id: {transaction_id}
+
+{
+  "name": "solution12-rdg",
+  "partition": "Common",
+  "type": "rdg-rap",
+  "defaultLanguage": "en",
+  "acceptLanguages": ["en"],
+  "accessPolicyTimeout": 300,
+  "inactivityTimeout": 900,
+  "maxSessionTimeout": 604800,
+  "logSettings": ["/Common/default-log-setting"]
+}
+```
+
+**Key Point:** `type: "rdg-rap"` is critical for RD Gateway functionality.
+
+### Variable Assignment for Domain SSO
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/agent/variable-assign/
+Content-Type: application/json
+X-F5-REST-Coordination-Id: {transaction_id}
+
+{
+  "name": "solution12-psp_act_variable_assign_ag",
+  "partition": "Common",
+  "variables": [{
+    "append": "false",
+    "expression": "return {F5LAB.LOCAL}",
+    "secure": "false",
+    "varname": "session.logon.last.domain"
+  }]
+}
+```
+
+**Purpose:** Sets the domain for RDP SSO from the session variable.
+
+### RDG Policy Assignment (Resource Assign Agent)
+
+The PSP policy assigns the RDG policy via a resource-assign agent:
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/agent/resource-assign/
+Content-Type: application/json
+X-F5-REST-Coordination-Id: {transaction_id}
+
+{
+  "name": "solution12-psp_act_rdg_policy_assign_ag",
+  "partition": "Common",
+  "type": "rdg-policy",
+  "rdgPolicy": {
+    "name": "/Common/solution12-rdg"
+  }
+}
+```
+
+**Key:** `type: "rdg-policy"` with `rdgPolicy` reference.
+
+### Full Resource Assignment
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/agent/resource-assign/
+Content-Type: application/json
+X-F5-REST-Coordination-Id: {transaction_id}
+
+{
+  "name": "solution12-psp_act_full_resource_assign_ag",
+  "partition": "Common",
+  "type": "general-item",
+  "rdpResourceAssign": [{
+    "name": "/Common/solution12-vdi-resource",
+    "type": "rdp"
+  }],
+  "webtopAssign": {
+    "name": "/Common/solution12-webtop",
+    "type": "webtop"
+  }
+}
+```
+
+### Virtual Server Profile Attachment
+
+AS3 does not support VDI profiles, so profiles must be added via PATCH after AS3 deployment:
+
+**Postman:**
+```http
+PATCH https://{{BIGIP_MGMT}}/mgmt/tm/ltm/virtual/~solution12~solution12~solution12
+Content-Type: application/json
+
+{
+  "profiles": [
+    {"name": "/Common/solution12-psp", "context": "all"},
+    {"name": "/Common/solution12-cp", "context": "all"},
+    {"name": "/Common/solution12-vdi", "context": "all"},
+    {"name": "solution12-clientssl", "context": "clientside"},
+    {"name": "/Common/serverssl", "context": "serverside"},
+    {"name": "/Common/http", "context": "all"},
+    {"name": "/Common/tcp", "context": "all"},
+    {"name": "/Common/websocket", "context": "all"}
+  ]
+}
+```
+
+**Required Profiles:**
+- `solution12-psp` - Access (PSP) profile
+- `solution12-cp` - Connectivity profile
+- `solution12-vdi` - VDI profile
+- `clientssl` - TLS client-side
+- `serverssl` - TLS server-side (required for RDP resource)
+- `websocket` - For HTML5 RDP transport
+
+### Solution 12 Critical Implementation Details
+
+#### Profile Creation Order
+1. Create connectivity customization group
+2. Create PPP tunnel
+3. Create connectivity profile
+4. Create VDI profile
+5. Create access policies (RDG and PSP)
+6. Deploy AS3 (without APM profiles)
+7. PATCH virtual server to add all profiles
+
+#### AS3 Limitation
+AS3 does not support `profileVDI` or `profileConnectivity`. The virtual server must be created without these profiles, then patched via REST API.
+
+#### Serverssl Requirement
+The virtual server requires a serverssl profile when VDI profile is attached with RDP resources, even if `enableServersideSsl: "disabled"` on the RDP resource.
+
+---
+
+### File Location Reference (Solution 12)
+
+| Component | File Path |
+|-----------|-----------|
+| Solution 12 playbook | `deploy_apm_rdg.yml` |
+| Solution 12 delete playbook | `delete_apm_rdg.yml` |
+| Solution 12 variables | `vars/solution12.yml` |
+| Access policy (Solution 12) | `tasks/access_policy_solution12.yml` |
+| Solution 12 source | [solution12-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution12/postman/solution12-create.postman_collection.json) |
+
+---
+

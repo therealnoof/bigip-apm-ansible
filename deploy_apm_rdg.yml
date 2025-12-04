@@ -1,0 +1,674 @@
+---
+# Solution 12: Remote Desktop Gateway (RDG) Deployment
+# BIG-IP APM as Remote Desktop Gateway with AD Authentication
+#
+# This playbook deploys:
+# - Active Directory AAA configuration (node, pool, server)
+# - RDP (Remote Desktop) resource
+# - Webtop for presenting RDP resources
+# - RDG Access Profile (rdg-rap type) for RDP gateway
+# - PSP Access Profile with AD auth and resource assignment
+# - Self-signed certificate (optional)
+# - AS3 Application deployment
+#
+# Usage:
+#   ansible-playbook deploy_apm_rdg.yml
+#
+# Prerequisites:
+#   - BIG-IP with APM provisioned
+#   - Active Directory server accessible from BIG-IP
+#   - RDP server accessible from BIG-IP
+#   - AS3 extension installed on BIG-IP
+
+- name: Deploy Remote Desktop Gateway (Solution 12)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution12.yml
+
+  tasks:
+    # =========================================================================
+    # VERIFY PREREQUISITES
+    # =========================================================================
+
+    - name: Verify AS3 is available
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/info"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+      register: as3_info
+      tags:
+        - verify
+        - always
+
+    - name: Display AS3 version
+      debug:
+        msg: "AS3 version: {{ as3_info.json.version }}"
+      tags:
+        - verify
+
+    - name: Display deployment information
+      debug:
+        msg: |
+          ============================================
+          Remote Desktop Gateway Deployment
+          ============================================
+
+          Solution Name: {{ vs1_name }}
+          DNS Name: {{ dns1_name }}
+          Partition: {{ partition_name }}
+
+          Components to Deploy:
+          - Active Directory Authentication
+          - RDP Resource ({{ rdp_resource.ip }}:{{ rdp_resource.port }})
+          - Webtop (Full)
+          - RDG Access Profile (rdg-rap type)
+          - PSP Access Profile with AD Auth
+          - Virtual Server ({{ as3_config.virtual_address }}:{{ as3_config.virtual_port }})
+
+          Policy Flow:
+            Start → Logon Page → AD Auth → RDG Policy Assign
+                                         → Variable Assign
+                                         → Resource Assign → Allow
+
+          ============================================
+      tags:
+        - always
+
+    # =========================================================================
+    # SELF-SIGNED CERTIFICATE (Optional)
+    # =========================================================================
+
+    - name: Generate self-signed certificate
+      block:
+        - name: Generate self-signed certificate and key locally
+          command: >
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048
+            -keyout /tmp/{{ vs1_name }}.key
+            -out /tmp/{{ vs1_name }}.crt
+            -subj "/C=US/ST=State/L=City/O=Organization/CN={{ wildcard_cert.common_name }}"
+          delegate_to: localhost
+          args:
+            creates: /tmp/{{ vs1_name }}.crt
+
+        - name: Read certificate file
+          set_fact:
+            cert_content: "{{ lookup('file', '/tmp/' + vs1_name + '.crt') }}"
+          delegate_to: localhost
+
+        - name: Read key file
+          set_fact:
+            key_content: "{{ lookup('file', '/tmp/' + vs1_name + '.key') }}"
+          delegate_to: localhost
+
+        - name: Upload certificate to BIG-IP
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}.crt"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            headers:
+              Content-Type: "application/octet-stream"
+              Content-Range: "0-{{ cert_content | length - 1 }}/{{ cert_content | length }}"
+            body: "{{ cert_content }}"
+            status_code: [200, 201]
+            timeout: 30
+          delegate_to: localhost
+
+        - name: Upload private key to BIG-IP
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ vs1_name }}.key"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            headers:
+              Content-Type: "application/octet-stream"
+              Content-Range: "0-{{ key_content | length - 1 }}/{{ key_content | length }}"
+            body: "{{ key_content }}"
+            status_code: [200, 201]
+            timeout: 30
+          delegate_to: localhost
+
+        - name: Install private key on BIG-IP
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            body_format: json
+            body:
+              name: "{{ wildcard_cert.name }}"
+              partition: "Common"
+              sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}.key"
+            status_code: [200, 201, 400, 409]
+            timeout: 30
+          delegate_to: localhost
+          register: key_install_result
+
+        - name: Install certificate on BIG-IP
+          uri:
+            url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+            method: POST
+            user: "{{ bigip_username }}"
+            password: "{{ bigip_password }}"
+            validate_certs: "{{ validate_certs }}"
+            body_format: json
+            body:
+              name: "{{ wildcard_cert.name }}"
+              partition: "Common"
+              commonName: "{{ wildcard_cert.common_name }}"
+              sourcePath: "file:/var/config/rest/downloads/{{ vs1_name }}.crt"
+              key: "/Common/{{ wildcard_cert.name }}"
+            status_code: [200, 201, 400, 409]
+            timeout: 30
+          delegate_to: localhost
+          register: cert_install_result
+
+        - name: Display certificate installation status
+          debug:
+            msg:
+              - "Certificate Status: {{ cert_install_result.status }}"
+              - "Private Key Status: {{ key_install_result.status }}"
+              - "Certificate Name: /Common/{{ wildcard_cert.name }}"
+
+        - name: Clean up local temporary files
+          file:
+            path: "{{ item }}"
+            state: absent
+          delegate_to: localhost
+          loop:
+            - "/tmp/{{ vs1_name }}.crt"
+            - "/tmp/{{ vs1_name }}.key"
+
+      when: wildcard_cert.use_self_signed | default(false) | bool
+      tags:
+        - certificate
+        - ssl
+
+    # =========================================================================
+    # ACTIVE DIRECTORY CONFIGURATION
+    # =========================================================================
+
+    - name: Create AD server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ ad_server.ip }}"
+          address: "{{ ad_server.ip }}"
+        status_code: [200, 201, 409]
+      tags:
+        - aaa
+        - ad
+
+    - name: Create AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-ad-servers"
+          members:
+            - name: "{{ ad_server.ip }}:{{ ad_server.pool_port }}"
+              address: "{{ ad_server.ip }}"
+        status_code: [200, 201, 409]
+      tags:
+        - aaa
+        - ad
+
+    - name: Create APM AAA Active Directory server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-ad-servers"
+          adminEncryptedPassword: "{{ ad_server.admin_password }}"
+          adminName: "{{ ad_server.admin_name }}"
+          domain: "{{ ad_server.domain }}"
+          pool: "/Common/{{ vs1_name }}-ad-servers"
+          timeout: 15
+        status_code: [200, 201, 409]
+      tags:
+        - aaa
+        - ad
+
+    # =========================================================================
+    # RDP RESOURCE CONFIGURATION
+    # =========================================================================
+
+    - name: Create RDP resource
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/remote-desktop/rdp"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ rdp_resource.name }}"
+          partition: "{{ rdp_resource.partition }}"
+          ip: "{{ rdp_resource.ip }}"
+          port: "{{ rdp_resource.port }}"
+          autoLogon: "{{ rdp_resource.auto_logon }}"
+          serverType: "{{ rdp_resource.server_type }}"
+          enableServersideSsl: "{{ rdp_resource.enable_serverside_ssl }}"
+          locationSpecific: "{{ rdp_resource.location_specific }}"
+          userDefinedDst: "{{ rdp_resource.user_defined_dst }}"
+          usernameSource: "{{ rdp_resource.username_source }}"
+          passwordSource: "{{ rdp_resource.password_source }}"
+          domainSource: "{{ rdp_resource.domain_source }}"
+        status_code: [200, 201, 409]
+      tags:
+        - rdp
+        - resource
+
+    - name: Display RDP resource created
+      debug:
+        msg: "RDP Resource {{ rdp_resource.name }} created - Target: {{ rdp_resource.ip }}:{{ rdp_resource.port }}"
+      tags:
+        - rdp
+
+    # =========================================================================
+    # WEBTOP CONFIGURATION
+    # =========================================================================
+
+    - name: Create webtop customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ webtop.name }}"
+          partition: "{{ webtop.partition }}"
+          source: "/Common/{{ custom_type }}"
+          type: "webtop"
+        status_code: [200, 201, 409]
+      tags:
+        - webtop
+
+    - name: Create webtop
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/resource/webtop"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ webtop.name }}"
+          partition: "{{ webtop.partition }}"
+          webtopType: "{{ webtop.type }}"
+          minimizeToTray: "{{ webtop.minimize_to_tray }}"
+          customizationGroup: "/{{ webtop.partition }}/{{ webtop.name }}"
+        status_code: [200, 201, 409]
+      tags:
+        - webtop
+
+    - name: Display webtop created
+      debug:
+        msg: "Webtop {{ webtop.name }} created - Type: {{ webtop.type }}"
+      tags:
+        - webtop
+
+    # =========================================================================
+    # VDI PROFILE CONFIGURATION
+    # =========================================================================
+
+    - name: Create connectivity profile customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}_secure_access_client_customization"
+          partition: "Common"
+          source: "/Common/standard"
+          type: "secure-access-client"
+        status_code: [200, 201, 409]
+      tags:
+        - connectivity
+        - profile
+
+    - name: Create PPP tunnel
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/net/tunnels/tunnel"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-tunnel"
+          partition: "Common"
+          profile: "/Common/ppp"
+          autoLasthop: "default"
+          idleTimeout: 300
+          localAddress: "any6"
+          mode: "bidirectional"
+          remoteAddress: "any6"
+          secondaryAddress: "any6"
+          tos: "preserve"
+          transparent: "disabled"
+          usePmtu: "enabled"
+        status_code: [200, 201, 409]
+      tags:
+        - connectivity
+        - tunnel
+
+    - name: Create connectivity profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/connectivity/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-cp"
+          partition: "Common"
+          defaultsFrom: "/Common/connectivity"
+          customizationGroup: "/Common/{{ vs1_name }}_secure_access_client_customization"
+          tunnelName: "/Common/{{ vs1_name }}-tunnel"
+        status_code: [200, 201, 409]
+      tags:
+        - connectivity
+        - profile
+
+    - name: Create VDI profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/vdi/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-vdi"
+          partition: "Common"
+          defaultsFrom: "/Common/vdi"
+          vmwareViewUdpTransport: "pcoip"
+        status_code: [200, 201, 409]
+      tags:
+        - vdi
+        - profile
+
+    - name: Display profiles created
+      debug:
+        msg: "Connectivity profile {{ vs1_name }}-cp and VDI profile {{ vs1_name }}-vdi created"
+      tags:
+        - profiles
+
+    # =========================================================================
+    # ACCESS POLICY CONFIGURATION
+    # =========================================================================
+
+    - name: Configure RDG and PSP access policies
+      include_tasks: tasks/access_policy_solution12.yml
+      tags:
+        - policy
+        - access
+
+    # =========================================================================
+    # AS3 APPLICATION DEPLOYMENT
+    # =========================================================================
+
+    - name: Build TLS server certificate config
+      set_fact:
+        tls_cert_config:
+          class: "Certificate"
+          certificate:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+          privateKey:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+      tags:
+        - application
+        - as3
+
+    - name: Build TLS server profile config
+      set_fact:
+        tls_server_config:
+          class: "TLS_Server"
+          certificates:
+            - certificate: "tlsserver_local_cert"
+      tags:
+        - application
+        - as3
+
+    - name: Build virtual server config
+      set_fact:
+        vs_config:
+          class: "Service_HTTPS"
+          virtualAddresses:
+            - "{{ as3_config.virtual_address }}"
+          virtualPort: 443
+          serverTLS: "{{ vs1_name }}-clientssl"
+          snat: "{{ as3_config.snat }}"
+      tags:
+        - application
+        - as3
+
+    - name: Build application config
+      set_fact:
+        app_config:
+          class: "Application"
+          template: "generic"
+      tags:
+        - application
+        - as3
+
+    - name: Add virtual server to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name: vs_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add TLS server profile to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name + '-clientssl': tls_server_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add certificate to application
+      set_fact:
+        app_config: "{{ app_config | combine({'tlsserver_local_cert': tls_cert_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Build tenant config
+      set_fact:
+        tenant_config:
+          class: "Tenant"
+      tags:
+        - application
+        - as3
+
+    - name: Add application to tenant
+      set_fact:
+        tenant_config: "{{ tenant_config | combine({vs1_name: app_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Build AS3 declaration
+      set_fact:
+        as3_declaration:
+          class: "ADC"
+          schemaVersion: "3.14.0"
+          id: "APM-RDG"
+      tags:
+        - application
+        - as3
+
+    - name: Add tenant to declaration
+      set_fact:
+        as3_declaration: "{{ as3_declaration | combine({partition_name: tenant_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Build complete AS3 payload
+      set_fact:
+        as3_payload:
+          class: "AS3"
+          action: "deploy"
+          persist: true
+          declaration: "{{ as3_declaration }}"
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 declaration
+      debug:
+        var: as3_payload
+        verbosity: 1
+      tags:
+        - application
+        - as3
+
+    - name: Deploy application using AS3
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body: "{{ as3_payload }}"
+        status_code: [200, 201, 202]
+        timeout: 120
+      register: as3_result
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deployment result
+      debug:
+        msg: "AS3 deployment completed: {{ as3_result.json.results | default('Success') }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # ADD APM PROFILES TO VIRTUAL SERVER
+    # =========================================================================
+    # AS3 does not support profileVDI or profileAccess with RDP resources,
+    # so we need to PATCH the virtual server after AS3 deployment
+
+    - name: Add APM profiles to virtual server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/virtual/~{{ partition_name }}~{{ vs1_name }}~{{ vs1_name }}"
+        method: PATCH
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          profiles:
+            - name: "/Common/{{ vs1_name }}-psp"
+              context: "all"
+            - name: "/Common/{{ vs1_name }}-cp"
+              context: "all"
+            - name: "/Common/{{ vs1_name }}-vdi"
+              context: "all"
+            - name: "{{ vs1_name }}-clientssl"
+              context: "clientside"
+            - name: "/Common/serverssl"
+              context: "serverside"
+            - name: "/Common/http"
+              context: "all"
+            - name: "/Common/tcp"
+              context: "all"
+            - name: "/Common/websocket"
+              context: "all"
+        status_code: [200]
+      tags:
+        - application
+        - profiles
+
+    - name: Display APM profiles attached
+      debug:
+        msg: "APM profiles ({{ vs1_name }}-psp, {{ vs1_name }}-vdi) attached to virtual server"
+      tags:
+        - application
+        - profiles
+
+    # =========================================================================
+    # DEPLOYMENT SUMMARY
+    # =========================================================================
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================================
+          Remote Desktop Gateway Deployment Complete
+          ============================================================
+
+          Virtual Server: https://{{ dns1_name }}
+          Virtual Address: {{ as3_config.virtual_address }}:{{ as3_config.virtual_port }}
+
+          RDP Resource:
+          - Name: {{ rdp_resource.name }}
+          - Target: {{ rdp_resource.ip }}:{{ rdp_resource.port }}
+          - Server Type: {{ rdp_resource.server_type }}
+          - Auto Logon: {{ rdp_resource.auto_logon }}
+
+          Webtop:
+          - Name: {{ webtop.name }}
+          - Type: {{ webtop.type }}
+
+          Access Profiles:
+          - PSP (main): {{ vs1_name }}-psp
+          - RDG (gateway): {{ vs1_name }}-rdg
+
+          Authentication:
+          - AD Domain: {{ ad_server.domain }}
+          - AD Server: {{ ad_server.ip }}
+          - SSO Domain: {{ variable_assign.domain }}
+
+          Policy Flow:
+            Start → Logon Page → AD Auth → RDG Policy Assign
+                                         → Variable Assign (domain)
+                                         → Resource Assign (webtop + RDP)
+                                         → Allow
+
+          Next Steps:
+          1. Ensure DNS resolves {{ dns1_name }} to {{ as3_config.virtual_address }}
+          2. Access https://{{ dns1_name }} in a browser
+          3. Login with AD credentials
+          4. Click on the RDP resource in the webtop to connect
+
+          Cleanup:
+          To remove this deployment, run:
+            ansible-playbook delete_apm_rdg.yml
+
+          ============================================================
+      tags:
+        - always

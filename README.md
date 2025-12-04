@@ -235,6 +235,50 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution11-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution11/postman/solution11-create.postman_collection.json)
 
+### Solution 12: Remote Desktop Gateway (RDG) with AD Authentication
+- **Remote Desktop Gateway** - HTML5-based RDP access through BIG-IP APM
+- **Active Directory Authentication** - AD authentication with SSO to RDP servers
+- **RDP Resource** - Remote Desktop resource with auto-logon capability
+- **VDI Profile** - Virtual Desktop Infrastructure profile for RDP handling
+- **Connectivity Profile** - PPP tunnel for VDI connections
+- **RDG Access Profile** - Specialized rdg-rap type profile for RD Gateway
+- **Webtop** - Full webtop for presenting RDP resources
+- **Variable Assignment** - Domain SSO via session variable injection
+- **Access Policy** - Two-policy architecture (RDG + PSP)
+- **Application Deployment** - AS3-based HTTPS virtual server with APM profiles
+
+**Use Case:** Enterprise remote desktop access where users authenticate via Active Directory and receive HTML5-based RDP access to backend servers. Enables secure browser-based remote desktop without requiring an RDP client.
+
+**Authentication Flow:**
+1. User accesses RDG virtual server
+2. User enters AD credentials on logon page
+3. APM authenticates against Active Directory
+4. RDG policy is assigned for RD Gateway handling
+5. Domain variable is set for SSO
+6. RDP resource and webtop are assigned
+7. User clicks RDP resource in webtop
+8. HTML5 RDP connection established with SSO
+
+**Policy Flow:**
+```
+PSP Policy:
+Start → Logon Page → AD Auth → RDG Policy Assign → Variable Assign
+                                                  → Resource Assign → Allow
+
+RDG Policy:
+Start → Allow (simple allow for RD Gateway traffic)
+```
+
+**Required Profiles:**
+| Profile Type | Name | Purpose |
+|--------------|------|---------|
+| Access (PSP) | solution12-psp | Main authentication policy |
+| Access (RDG) | solution12-rdg | RD Gateway traffic handling |
+| VDI | solution12-vdi | Virtual Desktop Infrastructure |
+| Connectivity | solution12-cp | PPP tunnel for VDI |
+
+**Source:** [solution12-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution12/postman/solution12-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
