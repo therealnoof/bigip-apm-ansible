@@ -182,7 +182,7 @@ policy_agents:
     type: "general"
     variables:
       - append: "false"
-        expression: "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \"\\n\"]; foreach field $x509e_fields { if { $field contains \"othername:UPN\" } { set start [expr {[string first \"<\" $field] +1}]; return [string range $field $start [expr { [string first \">\" $field $start] - 1 } ] ]; } }; return \"UPN-NOT-FOUND\";"
+        expression: "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \\\"\\\\n\\\"]; foreach field $x509e_fields { if { $field contains \\\"othername:UPN\\\" } { set start [expr {[string first \\\"othername:UPN<\\\" $field] +14}]; return [string range $field $start [expr { [string first \\\">\\\" $field $start] - 1 } ] ]; } }; return \\\"UPN-NOT-FOUND\\\";"
         secure: "false"
         varname: "session.custom.upn"
 
