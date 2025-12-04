@@ -124,21 +124,26 @@ This project automates the deployment of production-ready APM solutions includin
 - **OAuth 2.0 Resource Server** - BIG-IP APM validates OAuth tokens from an Authorization Server
 - **OAuth Provider** - Connects to OAuth Authorization Server's OIDC discovery endpoint
 - **JWK Configuration** - Pre-shared key matching the Authorization Server
-- **JWT Configuration** - Manual JWT config for token validation
-- **JWT Provider List** - Links provider with JWT config
+- **Token Validation Modes** - External (introspection) or Internal (JWT) validation
 - **OAuth Scope Agent** - Validates OAuth tokens in access policy
 - **Access Policy** - Simple flow: Start → OAuth Scope → Allow/Deny
 - **Application Deployment** - AS3-based HTTPS virtual server with backend pool
 
 **Use Case:** Protected API or application that requires OAuth token validation. Works in conjunction with Solution 8 (OAuth Authorization Server) to create a complete OAuth 2.0 ecosystem.
 
-**Prerequisites:** Solution 8 (OAuth Authorization Server) must be deployed and accessible at the configured OIDC discovery endpoint.
+**Prerequisites:** Solution 8 (OAuth Authorization Server) should be deployed. External mode works even if OAuth AS is not reachable during deployment.
+
+**Token Validation Modes:**
+- **External (default):** Uses token introspection against OAuth AS at runtime. Works even if OIDC discovery fails during deployment.
+- **Internal:** Uses JWT validation with pre-shared key. Requires OIDC discovery to succeed (OAuth AS must be reachable).
 
 **Authentication Flow:**
 1. Client presents OAuth access token
-2. OAuth Scope agent validates token against Authorization Server
+2. OAuth Scope agent validates token (via introspection or JWT validation)
 3. If valid, access granted to protected resource
 4. If invalid, access denied
+
+**API Limitations & Workarounds:** See "Solution 9 Implementation Notes" section below for critical details about JWT provider list requirements.
 
 **Source:** [solution9-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution9/postman/solution9-create.postman_collection.json)
 
@@ -1255,29 +1260,32 @@ ansible-playbook deploy_apm_oauth_as.yml --tags application,as3
 Deploy the OAuth Resource Server for protected applications that validate OAuth tokens:
 
 ```bash
+# Default: External/Introspection mode (recommended)
 ansible-playbook deploy_apm_oauth_rs.yml
+
+# Internal/JWT mode (requires OIDC discovery to succeed)
+ansible-playbook deploy_apm_oauth_rs.yml -e token_validation_mode=internal
 ```
 
 **Prerequisites:**
-- Solution 8 (OAuth Authorization Server) must be deployed and accessible
-- The OAuth AS OIDC discovery endpoint must be reachable from BIG-IP
+- Solution 8 (OAuth Authorization Server) should be deployed
+- For **external mode** (default): OAuth AS must be reachable at runtime for introspection
+- For **internal mode**: OAuth AS must be reachable during deployment for OIDC discovery
 
 **What Gets Deployed:**
 - **OAuth Provider:**
   - Connects to OAuth Authorization Server's OIDC endpoint
-  - Discovers token validation endpoints
+  - Uses `trustedCaBundle: /Common/ca-bundle.crt` for OIDC discovery
+  - `useAutoJwtConfig: true` enabled
 
 - **JWK Configuration:**
   - Pre-shared key matching the Authorization Server
   - HS256 signing algorithm
 
-- **JWT Configuration:**
-  - Manual JWT config with issuer and signing algorithms
-  - Links to JWK for token validation
-
-- **JWT Provider List:**
+- **JWT Provider List (Internal Mode Only):**
   - Associates OAuth provider with JWT config
-  - Required for OAuth scope agent
+  - Only created when `token_validation_mode=internal`
+  - Requires OIDC discovery to establish internal linkage
 
 - **OAuth Client Application:**
   - Client configuration for OAuth flow
@@ -1285,6 +1293,8 @@ ansible-playbook deploy_apm_oauth_rs.yml
 
 - **Access Policy:**
   - OAuth Scope agent for token validation
+  - External mode: uses `oauthProvider` reference
+  - Internal mode: uses `jwtProviderList` reference
   - Simple flow: Start → OAuth Scope → Allow/Deny
 
 - **AS3 Application:**
@@ -1302,6 +1312,9 @@ partition_name: "solution9"
 
 # OAuth Authorization Server Reference
 oauth_as_dns: "as.acme.com"
+
+# Token validation mode: "external" (introspection) or "internal" (JWT)
+token_validation_mode: "external"
 
 # JWK Configuration (must match AS)
 jwk_config:
@@ -1329,10 +1342,20 @@ ansible-playbook deploy_apm_oauth_rs.yml --tags policy
 ansible-playbook deploy_apm_oauth_rs.yml --tags application,as3
 ```
 
+**Token Validation Mode Comparison:**
+
+| Feature | External (default) | Internal |
+|---------|-------------------|----------|
+| OIDC Discovery Required | No (at deployment) | Yes |
+| JWT Provider List | Not created | Required |
+| Token Validation | Introspection at runtime | JWT validation locally |
+| OAuth AS Availability | Required at runtime | Required at deployment |
+| Use Case | Standard deployments | Air-gapped/offline validation |
+
 **Important Notes:**
-- The JWT provider list requires the OAuth provider to have a manual JWT config attached
-- When OIDC discovery fails (AS not reachable), the playbook creates a manual JWT config
+- **External mode is recommended** for most deployments as it doesn't require OIDC discovery
 - The shared secret must match the JWK configured on the Authorization Server
+- See "Solution 9 Implementation Notes" below for API limitations and workarounds
 
 ### Deployment Options
 
@@ -1814,6 +1837,94 @@ curl -k https://<bigip-ip>/mgmt/shared/appsvcs/info
 tail -f /var/log/restjavad.0.log
 ```
 
+### Solution 9 Implementation Notes (OAuth Resource Server)
+
+**CRITICAL API LIMITATIONS AND WORKAROUNDS**
+
+This section documents important API limitations discovered during Solution 9 implementation and the workarounds applied.
+
+#### JWT Provider List Linkage Issue
+
+**Problem:** The JWT provider list creation fails with:
+```
+"01071ca0:3: When the manual flag is enabled, OAuth Provider must have manual JWT config attached"
+```
+or
+```
+"01071ca0:3: When the auto flag is enabled, OAuth Provider must have auto JWT config attached"
+```
+
+**Root Cause:** The JWT provider list requires an internal linkage between the OAuth provider and JWT config that can ONLY be established through successful OIDC discovery. The following API properties do NOT work:
+
+1. **`jwtConfig` on OAuth Provider** - This property is silently ignored when POSTing or PATCHing an OAuth provider. The API accepts it but doesn't apply it.
+
+2. **`provider` on JWT Config** - This property is also silently ignored when creating or updating JWT configs.
+
+3. **`useAutoJwtConfig: "true"`** - Requires `trustedCaBundle` to be set, AND requires OIDC discovery to actually succeed to create the internal linkage.
+
+4. **Pre-creating `auto_jwt_<provider>` config** - Even if you create a JWT config with the correct naming convention before the provider, the internal linkage is NOT established.
+
+**Workaround Applied:** The playbook defaults to **external/introspection mode** which:
+- Does NOT require the JWT provider list
+- Uses `oauthProvider` reference in the OAuth Scope agent instead of `jwtProviderList`
+- Validates tokens at runtime via introspection against the OAuth AS
+- Works even when OIDC discovery fails during deployment
+
+**To Use Internal/JWT Mode:**
+1. Ensure Solution 8 (OAuth AS) is deployed and reachable
+2. Verify OIDC discovery endpoint responds: `https://as.acme.com/f5-oauth2/v1/.well-known/openid-configuration`
+3. Deploy with: `ansible-playbook deploy_apm_oauth_rs.yml -e token_validation_mode=internal`
+
+#### OAuth Provider trustedCaBundle Requirement
+
+**Problem:** Setting `useAutoJwtConfig: "true"` without `trustedCaBundle` results in:
+```
+"must have trusted CA present"
+```
+
+**Solution:** The playbook sets `trustedCaBundle: "/Common/ca-bundle.crt"` which is a built-in CA bundle on BIG-IP systems.
+
+#### OAuth Client Customization Group Deletion Order
+
+**Problem:** Deleting the OAuth client customization group before the OAuth client application fails:
+```
+"Cannot delete customization group because it is used"
+```
+
+**Solution:** The delete playbook deletes the OAuth client application FIRST, then deletes its customization group.
+
+#### Ansible Jinja2 Variables in Dictionary Keys
+
+**Problem:** AS3 declarations with Jinja2 variables as dictionary keys don't evaluate properly:
+```yaml
+# This doesn't work - sends literal "{{ partition_name }}"
+declaration:
+  "{{ partition_name }}":
+    class: "Tenant"
+```
+
+**Solution:** Use Ansible's `combine` filter to build dictionaries with dynamic keys:
+```yaml
+- name: Build tenant config
+  set_fact:
+    as3_tenant_config:
+      class: "Tenant"
+
+- name: Add application to tenant
+  set_fact:
+    as3_tenant_config: "{{ as3_tenant_config | combine({path_name: as3_app_config}) }}"
+```
+
+#### Summary of Workarounds
+
+| Issue | Workaround |
+|-------|------------|
+| JWT Provider List requires OIDC discovery | Default to external mode |
+| `jwtConfig` property ignored on OAuth provider | Use external mode or ensure OIDC works |
+| `useAutoJwtConfig` requires `trustedCaBundle` | Set `trustedCaBundle: /Common/ca-bundle.crt` |
+| Customization group deletion dependency | Delete OAuth client app before its customization group |
+| AS3 Jinja2 dictionary keys | Use `combine` filter for dynamic keys |
+
 ### SAML IDP Issues (Solution 4)
 
 **Problem:** Certificate upload fails
@@ -2078,17 +2189,27 @@ This playbook is provided as-is for automation purposes. Test thoroughly before 
 
 ## Changelog
 
+### Version 2.4.1
+- **Solution 9 Fix: External/Introspection Mode**
+  - Discovered critical API limitation: JWT provider list requires OIDC discovery
+  - Added `token_validation_mode` variable: "external" (default) or "internal"
+  - External mode uses OAuth Scope agent with `oauthProvider` reference
+  - Internal mode uses `jwtProviderList` reference (requires OIDC discovery)
+  - Added `trustedCaBundle: /Common/ca-bundle.crt` for OAuth provider
+  - Fixed delete playbook: OAuth client app deleted before customization group
+  - Fixed AS3 declaration: Use `combine` filter for dynamic dictionary keys
+  - Comprehensive documentation of API limitations and workarounds
+
 ### Version 2.4.0
 - **Solution 9: OAuth Resource Server (Client)**
   - BIG-IP APM as OAuth 2.0 Resource Server
   - OAuth Provider connecting to Authorization Server's OIDC endpoint
   - JWK Configuration with pre-shared key (HS256)
-  - Manual JWT Configuration for token validation
-  - JWT Provider List linking provider to JWT config
+  - Token validation via external (introspection) or internal (JWT) modes
   - OAuth Client Application with redirect URIs
   - Access policy: Start → OAuth Scope → Allow/Deny
   - Full deployment and cleanup playbooks
-- Prerequisites: Solution 8 (OAuth AS) must be deployed first
+- Prerequisites: Solution 8 (OAuth AS) should be deployed
 - Updated API call counts: 380+ API calls across all solutions
 
 ### Version 2.3.0

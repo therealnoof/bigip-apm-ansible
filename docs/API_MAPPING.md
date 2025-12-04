@@ -2326,16 +2326,90 @@ For usage examples and troubleshooting, see [README.md](../README.md)
 
 ### Overview
 
-Solution 9 deploys BIG-IP APM as an OAuth 2.0 Resource Server (Client) that validates OAuth tokens from an Authorization Server (Solution 8). The implementation uses manual JWT configuration when OIDC auto-discovery fails.
+Solution 9 deploys BIG-IP APM as an OAuth 2.0 Resource Server (Client) that validates OAuth tokens from an Authorization Server (Solution 8).
+
+**IMPORTANT:** This implementation includes significant workarounds for API limitations discovered during development. The playbook defaults to **external/introspection mode** which does not require OIDC discovery.
 
 **Key Components:**
-- CA Certificate (for TLS trust)
 - JWK Configuration (pre-shared key)
-- JWT Configuration (manual token validation config)
 - OAuth Provider (connects to AS's OIDC endpoint)
-- JWT Provider List (links provider to JWT config)
 - OAuth Client Application (client registration)
 - Access Policy with OAuth Scope agent
+
+**Optional Components (Internal Mode Only):**
+- JWT Configuration (manual token validation config)
+- JWT Provider List (links provider to JWT config)
+
+---
+
+### CRITICAL API LIMITATIONS AND WORKAROUNDS
+
+#### 1. JWT Provider List Requires OIDC Discovery
+
+**Problem:** The JWT provider list requires an internal linkage between the OAuth provider and JWT config that can ONLY be established through successful OIDC discovery.
+
+**Error Messages:**
+```
+"01071ca0:3: When the manual flag is enabled, OAuth Provider must have manual JWT config attached"
+"01071ca0:3: When the auto flag is enabled, OAuth Provider must have auto JWT config attached"
+```
+
+**What Does NOT Work:**
+
+| Attempted Approach | Result |
+|-------------------|--------|
+| POST `jwtConfig` on OAuth provider | Property silently ignored |
+| PATCH `jwtConfig` on OAuth provider | Returns "one or more properties must be specified" |
+| POST `provider` on JWT config | Property silently ignored |
+| Pre-creating `auto_jwt_<provider>` config | Internal linkage not established |
+| `useAutoJwtConfig: "true"` without OIDC | `useAutoJwtConfig` stays false without successful discovery |
+
+**Workaround:** Use **external/introspection mode** which doesn't require JWT provider list.
+
+#### 2. useAutoJwtConfig Requires trustedCaBundle
+
+**Problem:** Setting `useAutoJwtConfig: "true"` without `trustedCaBundle` fails.
+
+**Error:**
+```
+"must have trusted CA present"
+```
+
+**Solution:** Set `trustedCaBundle: "/Common/ca-bundle.crt"` (built-in CA bundle).
+
+#### 3. OAuth Scope Agent Configuration Varies by Mode
+
+**External Mode:**
+```yaml
+body:
+  oauthProvider: "/Common/solution9-provider"
+  tokenValidationMode: "external"
+```
+
+**Internal Mode:**
+```yaml
+body:
+  jwtProviderList: "/Common/solution9-list"
+  tokenValidationMode: "internal"
+```
+
+---
+
+### Token Validation Modes
+
+| Mode | Description | Requirements | Use Case |
+|------|-------------|--------------|----------|
+| **External (default)** | Token introspection at runtime | OAuth AS reachable at runtime | Standard deployments |
+| **Internal** | Local JWT validation | OIDC discovery successful | Air-gapped environments |
+
+**Usage:**
+```bash
+# External mode (default)
+ansible-playbook deploy_apm_oauth_rs.yml
+
+# Internal mode
+ansible-playbook deploy_apm_oauth_rs.yml -e token_validation_mode=internal
+```
 
 ---
 
@@ -2343,7 +2417,7 @@ Solution 9 deploys BIG-IP APM as an OAuth 2.0 Resource Server (Client) that vali
 
 **API Endpoint:** `POST /mgmt/tm/apm/aaa/oauth-provider`
 
-**Postman:**
+**Postman (Original - relies on OIDC discovery):**
 ```http
 POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/aaa/oauth-provider
 
@@ -2359,15 +2433,14 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/aaa/oauth-provider
   "openidCfgUri": "https://{{AS_DNS}}/f5-oauth2/v1/.well-known/openid-configuration",
   "saveJsonPayload": "disabled",
   "type": "f5",
-  "useAutoJwtConfig": "false",
-  "jwtConfig": "/Common/{{VS_NAME}}-jwt-config"
+  "useAutoJwtConfig": "true"
 }
 ```
 
-**Ansible:**
+**Ansible (with workarounds):**
 ```yaml
 # deploy_apm_oauth_rs.yml
-- name: Create OAuth provider with manual JWT config
+- name: Create OAuth provider
   uri:
     url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider"
     method: POST
@@ -2381,19 +2454,19 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/aaa/oauth-provider
       introspect: "{{ oauth_provider.introspect }}"
       openidCfgUri: "{{ oauth_provider.openid_cfg_uri }}"
       type: "{{ oauth_provider.type }}"
-      useAutoJwtConfig: "false"
-      jwtConfig: "/Common/{{ vs1_name }}-jwt-config"
+      trustedCaBundle: "/Common/ca-bundle.crt"  # REQUIRED for useAutoJwtConfig
+      useAutoJwtConfig: "true"
     status_code: [200, 201, 409]
 ```
 
 **Critical Notes:**
-- `useAutoJwtConfig: "false"` requires manual JWT config
-- `jwtConfig` must reference an existing JWT config
-- JWT config MUST be created BEFORE the OAuth provider
+- `trustedCaBundle: "/Common/ca-bundle.crt"` - REQUIRED when using `useAutoJwtConfig: "true"`
+- `jwtConfig` property is NOT supported via API (silently ignored)
+- `useAutoJwtConfig: "true"` only works if OIDC discovery succeeds
+- For external mode, the JWT config linkage isn't needed
 - `type: "f5"` for F5 OAuth AS, use `"custom"` for third-party AS
-- Discovery interval in seconds (60 = refresh every minute)
 
-**File:** `deploy_apm_oauth_rs.yml` (lines 171-197)
+**File:** `deploy_apm_oauth_rs.yml`
 
 ---
 
@@ -2550,11 +2623,11 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/oauth/jwt-provider-list
 
 ### OAuth Scope Agent
 
-Validates OAuth tokens in the access policy.
+Validates OAuth tokens in the access policy. Configuration differs by token validation mode.
 
 **API Endpoint:** `POST /mgmt/tm/apm/policy/agent/aaa-oauth`
 
-**Postman:**
+**Postman (Internal Mode - requires OIDC discovery):**
 ```http
 POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/agent/aaa-oauth
 
@@ -2571,29 +2644,48 @@ POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/agent/aaa-oauth
 }
 ```
 
-**Ansible:**
+**Ansible (External Mode - default, no OIDC required):**
 ```yaml
 # tasks/access_policy_solution9.yml
-- name: Create OAuth scope agent
+- name: Create OAuth scope agent (external/introspection mode)
   uri:
     body:
       name: "{{ policy_agents.oauth_scope.name }}"
       partition: "{{ policy_agents.oauth_scope.partition }}"
       grantType: "{{ policy_agents.oauth_scope.grant_type }}"
-      jwtProviderList: "{{ policy_agents.oauth_scope.jwt_provider_list }}"
+      oauthProvider: "{{ policy_agents.oauth_scope.oauth_provider }}"  # NOT jwtProviderList
       openidConnect: "{{ policy_agents.oauth_scope.openid_connect }}"
       openidFlowType: "{{ policy_agents.oauth_scope.openid_flow_type }}"
       redirectionUri: "{{ policy_agents.oauth_scope.redirection_uri }}"
-      tokenValidationMode: "{{ policy_agents.oauth_scope.token_validation_mode }}"
+      tokenValidationMode: "external"  # Introspection mode
       type: "{{ policy_agents.oauth_scope.type }}"
     status_code: [200, 201, 409]
+  when: token_validation_mode == "external"
+```
+
+**Ansible (Internal Mode - requires OIDC discovery):**
+```yaml
+- name: Create OAuth scope agent (internal/JWT mode)
+  uri:
+    body:
+      name: "{{ policy_agents.oauth_scope.name }}"
+      partition: "{{ policy_agents.oauth_scope.partition }}"
+      grantType: "{{ policy_agents.oauth_scope.grant_type }}"
+      jwtProviderList: "{{ policy_agents.oauth_scope.jwt_provider_list }}"  # NOT oauthProvider
+      openidConnect: "{{ policy_agents.oauth_scope.openid_connect }}"
+      openidFlowType: "{{ policy_agents.oauth_scope.openid_flow_type }}"
+      redirectionUri: "{{ policy_agents.oauth_scope.redirection_uri }}"
+      tokenValidationMode: "internal"  # JWT validation mode
+      type: "{{ policy_agents.oauth_scope.type }}"
+    status_code: [200, 201, 409]
+  when: token_validation_mode == "internal"
 ```
 
 **Critical Notes:**
 - `type: "scope"` - For token validation (Resource Server mode)
-- `jwtProviderList` must reference existing JWT provider list
-- `tokenValidationMode: "internal"` validates JWT locally
-- Use `"external"` for introspection-based validation
+- **External mode:** Use `oauthProvider` reference, validates via introspection
+- **Internal mode:** Use `jwtProviderList` reference, validates JWT locally
+- Do NOT mix `oauthProvider` and `jwtProviderList` - use one or the other
 - Agent result: `session.oauth.scope.last.authresult` (1 = success)
 
 **File:** `tasks/access_policy_solution9.yml`
