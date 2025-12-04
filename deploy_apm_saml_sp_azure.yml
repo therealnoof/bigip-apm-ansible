@@ -1,0 +1,626 @@
+---
+###############################################################################
+# SOLUTION 14: SAML Service Provider with Azure AD Identity Provider
+###############################################################################
+#
+# This playbook deploys a SAML Service Provider that authenticates users via
+# Azure Active Directory as the Identity Provider.
+#
+# Architecture:
+#   - Two SAML SP applications (sp.acme.com, sp1.acme.com)
+#   - Each SP has its own Azure AD IDP connector
+#   - Per-Session Policy (PSP) - simple allow pass-through
+#   - Per-Request Policy (PRP) - URL branching with SAML subroutines
+#
+# Policy Flow:
+#   PSP: Start → Allow
+#
+#   PRP: Start → URL Branching → sp.acme.com  → SAML Auth → Pool → Allow
+#                             → sp1.acme.com → SAML Auth → Pool → Allow
+#                             → (fallback)   → Reject
+#
+# Usage:
+#   ansible-playbook deploy_apm_saml_sp_azure.yml
+#
+# Prerequisites:
+#   - BIG-IP with APM licensed
+#   - Azure AD Enterprise Applications configured
+#   - Azure AD IDP certificates exported
+#   - Backend web servers accessible
+#
+###############################################################################
+
+- name: Deploy Solution 14 - SAML SP with Azure AD IDP
+  hosts: bigip
+  connection: local
+  gather_facts: no
+
+  vars_files:
+    - vars/solution14.yml
+
+  tasks:
+    # =========================================================================
+    # PRE-FLIGHT CHECKS
+    # =========================================================================
+
+    - name: Display deployment information
+      debug:
+        msg:
+          - "============================================================"
+          - "Solution 14: SAML SP with Azure AD IDP"
+          - "============================================================"
+          - "Virtual Server: {{ vs1_name }}"
+          - "Main DNS: {{ dns1_name }}"
+          - "SP Application 1: {{ dns2_name }}"
+          - "SP Application 2: {{ dns3_name }}"
+          - "Azure AD Tenant: {{ azure_tenant_id }}"
+          - "============================================================"
+      tags:
+        - always
+
+    # =========================================================================
+    # CREATE BACKEND NODES
+    # =========================================================================
+
+    - name: Create backend node for SP1
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ sp1_backend.node_address }}"
+          address: "{{ sp1_backend.node_address }}"
+        status_code: [200, 409]
+      register: node1_result
+      tags:
+        - ltm
+        - node
+
+    - name: Create backend node for SP2
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ sp2_backend.node_address }}"
+          address: "{{ sp2_backend.node_address }}"
+        status_code: [200, 409]
+      register: node2_result
+      tags:
+        - ltm
+        - node
+
+    - name: Display node creation results
+      debug:
+        msg:
+          - "Node {{ sp1_backend.node_address }}: {{ 'created' if node1_result.status == 200 else 'already exists' }}"
+          - "Node {{ sp2_backend.node_address }}: {{ 'created' if node2_result.status == 200 else 'already exists' }}"
+      tags:
+        - ltm
+        - node
+
+    # =========================================================================
+    # CREATE BACKEND POOLS
+    # =========================================================================
+
+    - name: Create pool for SP1 ({{ vs2_name }})
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-{{ vs2_name }}-pool"
+          members:
+            - name: "{{ sp1_backend.node_address }}:{{ sp1_backend.pool_port }}"
+              address: "{{ sp1_backend.node_address }}"
+              monitor: "/Common/tcp"
+        status_code: [200, 409]
+      register: pool1_result
+      tags:
+        - ltm
+        - pool
+
+    - name: Create pool for SP2 ({{ vs3_name }})
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}-{{ vs3_name }}-pool"
+          members:
+            - name: "{{ sp2_backend.node_address }}:{{ sp2_backend.pool_port }}"
+              address: "{{ sp2_backend.node_address }}"
+              monitor: "/Common/tcp"
+        status_code: [200, 409]
+      register: pool2_result
+      tags:
+        - ltm
+        - pool
+
+    - name: Display pool creation results
+      debug:
+        msg:
+          - "Pool {{ vs1_name }}-{{ vs2_name }}-pool: {{ 'created' if pool1_result.status == 200 else 'already exists' }}"
+          - "Pool {{ vs1_name }}-{{ vs3_name }}-pool: {{ 'created' if pool2_result.status == 200 else 'already exists' }}"
+      tags:
+        - ltm
+        - pool
+
+    # =========================================================================
+    # CREATE SELF-SIGNED CERTIFICATE (if needed)
+    # =========================================================================
+
+    - name: Check if wildcard certificate exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ wildcard_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: wildcard_cert_check
+      tags:
+        - certificate
+
+    - name: Create self-signed certificate
+      include_tasks: tasks/create_self_signed_cert_oauth.yml
+      when:
+        - wildcard_cert.use_self_signed | default(false) | bool
+        - wildcard_cert_check.status == 404
+      tags:
+        - certificate
+
+    - name: Display wildcard certificate status
+      debug:
+        msg: "Wildcard Certificate {{ wildcard_cert.name }}: {{ 'already exists' if wildcard_cert_check.status == 200 else ('self-signed created' if wildcard_cert.use_self_signed else 'MISSING') }}"
+      tags:
+        - certificate
+
+    # =========================================================================
+    # UPLOAD AND INSTALL AZURE AD IDP CERTIFICATES
+    # =========================================================================
+
+    # IDP Certificate 1 (for sp.acme.com)
+    - name: Check if IDP1 certificate exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ idp1_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: idp1_cert_check
+      tags:
+        - certificate
+        - idp
+
+    - name: Upload IDP1 certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ idp1_cert.name }}.crt"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        headers:
+          Content-Type: "application/octet-stream"
+          Content-Range: "0-{{ idp1_cert.content | length - 1 }}/{{ idp1_cert.content | length }}"
+        body: "{{ idp1_cert.content }}"
+        status_code: [200, 201]
+      when: idp1_cert_check.status == 404
+      tags:
+        - certificate
+        - idp
+
+    - name: Install IDP1 certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          command: "install"
+          name: "{{ idp1_cert.name }}"
+          from-local-file: "/var/config/rest/downloads/{{ idp1_cert.name }}.crt"
+        status_code: [200, 409]
+      when: idp1_cert_check.status == 404
+      tags:
+        - certificate
+        - idp
+
+    # IDP Certificate 2 (for sp1.acme.com)
+    - name: Check if IDP2 certificate exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ idp2_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: idp2_cert_check
+      tags:
+        - certificate
+        - idp
+
+    - name: Upload IDP2 certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ idp2_cert.name }}.crt"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        headers:
+          Content-Type: "application/octet-stream"
+          Content-Range: "0-{{ idp2_cert.content | length - 1 }}/{{ idp2_cert.content | length }}"
+        body: "{{ idp2_cert.content }}"
+        status_code: [200, 201]
+      when: idp2_cert_check.status == 404
+      tags:
+        - certificate
+        - idp
+
+    - name: Install IDP2 certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          command: "install"
+          name: "{{ idp2_cert.name }}"
+          from-local-file: "/var/config/rest/downloads/{{ idp2_cert.name }}.crt"
+        status_code: [200, 409]
+      when: idp2_cert_check.status == 404
+      tags:
+        - certificate
+        - idp
+
+    - name: Display IDP certificate status
+      debug:
+        msg:
+          - "IDP1 Certificate {{ idp1_cert.name }}: {{ 'already exists' if idp1_cert_check.status == 200 else 'installed' }}"
+          - "IDP2 Certificate {{ idp2_cert.name }}: {{ 'already exists' if idp2_cert_check.status == 200 else 'installed' }}"
+      tags:
+        - certificate
+        - idp
+
+    # =========================================================================
+    # CREATE SAML IDP CONNECTORS (Azure AD)
+    # =========================================================================
+
+    - name: Create SAML IDP Connector 1 (for {{ vs2_name }})
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ idp_connector_1.name }}"
+          partition: "{{ idp_connector_1.partition }}"
+          artifactResolutionServiceAddr: "any6"
+          artifactResolutionServicePort: 0
+          entityId: "{{ idp_connector_1.entity_id }}"
+          identityLocation: "{{ idp_connector_1.identity_location }}"
+          idpCertificate: "/Common/{{ idp1_cert.name }}"
+          locationSpecific: "{{ idp_connector_1.location_specific }}"
+          signArtifactResolutionRq: "{{ idp_connector_1.sign_artifact_resolution_rq }}"
+          signatureType: "{{ idp_connector_1.signature_type }}"
+          singleLogoutBinding: "{{ idp_connector_1.single_logout_binding }}"
+          singleLogoutResponseUri: "{{ idp_connector_1.single_logout_response_uri }}"
+          singleLogoutUri: "{{ idp_connector_1.single_logout_uri }}"
+          ssoBinding: "{{ idp_connector_1.sso_binding }}"
+          ssoUri: "{{ idp_connector_1.sso_uri }}"
+          wantAuthnRequestSigned: "{{ idp_connector_1.want_authn_request_signed }}"
+          wantDetachedSignature: "{{ idp_connector_1.want_detached_signature }}"
+        status_code: [200, 409]
+      register: idp_conn1_result
+      tags:
+        - saml
+        - idp
+
+    - name: Create SAML IDP Connector 2 (for {{ vs3_name }})
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ idp_connector_2.name }}"
+          partition: "{{ idp_connector_2.partition }}"
+          artifactResolutionServiceAddr: "any6"
+          artifactResolutionServicePort: 0
+          entityId: "{{ idp_connector_2.entity_id }}"
+          identityLocation: "{{ idp_connector_2.identity_location }}"
+          idpCertificate: "/Common/{{ idp2_cert.name }}"
+          locationSpecific: "{{ idp_connector_2.location_specific }}"
+          signArtifactResolutionRq: "{{ idp_connector_2.sign_artifact_resolution_rq }}"
+          signatureType: "{{ idp_connector_2.signature_type }}"
+          singleLogoutBinding: "{{ idp_connector_2.single_logout_binding }}"
+          singleLogoutResponseUri: "{{ idp_connector_2.single_logout_response_uri }}"
+          singleLogoutUri: "{{ idp_connector_2.single_logout_uri }}"
+          ssoBinding: "{{ idp_connector_2.sso_binding }}"
+          ssoUri: "{{ idp_connector_2.sso_uri }}"
+          wantAuthnRequestSigned: "{{ idp_connector_2.want_authn_request_signed }}"
+          wantDetachedSignature: "{{ idp_connector_2.want_detached_signature }}"
+        status_code: [200, 409]
+      register: idp_conn2_result
+      tags:
+        - saml
+        - idp
+
+    - name: Display IDP Connector results
+      debug:
+        msg:
+          - "IDP Connector {{ idp_connector_1.name }}: {{ 'created' if idp_conn1_result.status == 200 else 'already exists' }}"
+          - "IDP Connector {{ idp_connector_2.name }}: {{ 'created' if idp_conn2_result.status == 200 else 'already exists' }}"
+      tags:
+        - saml
+        - idp
+
+    # =========================================================================
+    # CREATE SAML SP SERVICES
+    # =========================================================================
+
+    - name: Create SAML SP Service 1 ({{ dns2_name }})
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ sp_service_1.name }}"
+          partition: "{{ sp_service_1.partition }}"
+          assertionConsumerBinding: "{{ sp_service_1.assertion_consumer_binding }}"
+          authContextComparisonMethod: "{{ sp_service_1.auth_context_comparison }}"
+          entityId: "{{ sp_service_1.entity_id }}"
+          forceAuthn: "{{ sp_service_1.force_authn }}"
+          isAuthnRequestSigned: "{{ sp_service_1.is_authn_request_signed }}"
+          locationSpecific: "{{ sp_service_1.location_specific }}"
+          nameIdPolicyAllowCreate: "{{ sp_service_1.name_id_policy_allow_create }}"
+          spHost: "{{ sp_service_1.sp_host }}"
+          spScheme: "{{ sp_service_1.sp_scheme }}"
+          wantAssertionEncrypted: "{{ sp_service_1.want_assertion_encrypted }}"
+          wantAssertionSigned: "{{ sp_service_1.want_assertion_signed }}"
+          idpConnectors:
+            - name: "{{ idp_connector_1.name }}"
+              partition: "Common"
+        status_code: [200, 409]
+      register: sp_serv1_result
+      tags:
+        - saml
+        - sp
+
+    - name: Create SAML SP Service 2 ({{ dns3_name }})
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ sp_service_2.name }}"
+          partition: "{{ sp_service_2.partition }}"
+          assertionConsumerBinding: "{{ sp_service_2.assertion_consumer_binding }}"
+          authContextComparisonMethod: "{{ sp_service_2.auth_context_comparison }}"
+          entityId: "{{ sp_service_2.entity_id }}"
+          forceAuthn: "{{ sp_service_2.force_authn }}"
+          isAuthnRequestSigned: "{{ sp_service_2.is_authn_request_signed }}"
+          locationSpecific: "{{ sp_service_2.location_specific }}"
+          nameIdPolicyAllowCreate: "{{ sp_service_2.name_id_policy_allow_create }}"
+          spHost: "{{ sp_service_2.sp_host }}"
+          spScheme: "{{ sp_service_2.sp_scheme }}"
+          wantAssertionEncrypted: "{{ sp_service_2.want_assertion_encrypted }}"
+          wantAssertionSigned: "{{ sp_service_2.want_assertion_signed }}"
+          idpConnectors:
+            - name: "{{ idp_connector_2.name }}"
+              partition: "Common"
+        status_code: [200, 409]
+      register: sp_serv2_result
+      tags:
+        - saml
+        - sp
+
+    - name: Display SP Service results
+      debug:
+        msg:
+          - "SP Service {{ sp_service_1.name }}: {{ 'created' if sp_serv1_result.status == 200 else 'already exists' }}"
+          - "SP Service {{ sp_service_2.name }}: {{ 'created' if sp_serv2_result.status == 200 else 'already exists' }}"
+      tags:
+        - saml
+        - sp
+
+    # =========================================================================
+    # CREATE ACCESS POLICIES (PSP + PRP)
+    # =========================================================================
+
+    - name: Create access policies
+      include_tasks: tasks/access_policy_solution14.yml
+      tags:
+        - policy
+
+    # =========================================================================
+    # DEPLOY AS3 APPLICATION
+    # =========================================================================
+
+    # Build AS3 declaration using set_fact for proper variable evaluation
+    - name: Build AS3 declaration
+      set_fact:
+        as3_declaration:
+          class: "ADC"
+          action: "deploy"
+          persist: true
+          declaration:
+            class: "ADC"
+            schemaVersion: "3.23.0"
+            id: "APM"
+
+    - name: Build tenant configuration
+      set_fact:
+        tenant_config:
+          class: "Tenant"
+
+    - name: Build application configuration
+      set_fact:
+        app_config:
+          class: "Application"
+          template: "generic"
+
+    - name: Build virtual server configuration
+      set_fact:
+        vs_config:
+          class: "Service_HTTPS"
+          virtualAddresses:
+            - "{{ as3_config.virtual_address }}"
+          virtualPort: 443
+          serverTLS: "{{ vs1_name }}-clientssl"
+          clientTLS: "{{ vs1_name }}-serverssl"
+          snat: "{{ as3_config.snat }}"
+          profileAccess:
+            bigip: "/Common/{{ vs1_name }}-psp"
+          policyPerRequestAccess:
+            bigip: "/Common/{{ vs1_name }}-prp"
+
+    - name: Build TLS server profile
+      set_fact:
+        tls_server_config:
+          class: "TLS_Server"
+          certificates:
+            - certificate: "tlsserver_local_cert"
+
+    - name: Build certificate configuration
+      set_fact:
+        cert_config:
+          class: "Certificate"
+          certificate:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+          privateKey:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+
+    - name: Build TLS client profile
+      set_fact:
+        tls_client_config:
+          class: "TLS_Client"
+
+    - name: Assemble application configuration
+      set_fact:
+        app_config: >-
+          {{
+            app_config | combine({
+              vs1_name: vs_config,
+              vs1_name + '-clientssl': tls_server_config,
+              'tlsserver_local_cert': cert_config,
+              vs1_name + '-serverssl': tls_client_config
+            })
+          }}
+
+    - name: Assemble tenant configuration
+      set_fact:
+        tenant_config: "{{ tenant_config | combine({vs1_name: app_config}) }}"
+
+    - name: Assemble final AS3 declaration
+      set_fact:
+        as3_declaration: >-
+          {{
+            as3_declaration | combine({
+              'declaration': as3_declaration.declaration | combine({
+                partition_name: tenant_config
+              })
+            })
+          }}
+
+    - name: Deploy AS3 application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body: "{{ as3_declaration }}"
+        status_code: [200, 202]
+        timeout: 120
+      register: as3_result
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deployment result
+      debug:
+        msg: "AS3 application deployed: {{ as3_result.json.results[0].message | default('Success') }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DEPLOYMENT SUMMARY
+    # =========================================================================
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================================
+          Solution 14: SAML SP with Azure AD - Deployment Complete
+          ============================================================
+
+          Virtual Server: https://{{ as3_config.virtual_address }}:443
+          Main DNS: {{ dns1_name }}
+
+          SP Application 1:
+          - Hostname: {{ dns2_name }}
+          - Entity ID: {{ sp_service_1.entity_id }}
+          - Backend Pool: {{ vs1_name }}-{{ vs2_name }}-pool
+
+          SP Application 2:
+          - Hostname: {{ dns3_name }}
+          - Entity ID: {{ sp_service_2.entity_id }}
+          - Backend Pool: {{ vs1_name }}-{{ vs3_name }}-pool
+
+          Azure AD Configuration:
+          - Tenant ID: {{ azure_tenant_id }}
+          - IDP Connector 1: {{ idp_connector_1.name }}
+          - IDP Connector 2: {{ idp_connector_2.name }}
+
+          Policy Flow:
+          PSP: Start → Allow (simple pass-through)
+
+          PRP: Start → URL Branching → {{ dns2_name }}  → SAML Auth → Pool → Allow
+                                    → {{ dns3_name }} → SAML Auth → Pool → Allow
+                                    → (fallback)   → Reject
+
+          ============================================================
+
+          Azure AD Enterprise Application Configuration Required:
+          1. Create two Enterprise Apps in Azure AD (one per SP)
+          2. Configure SAML SSO with:
+             - SP1 Entity ID: {{ sp_service_1.entity_id }}
+             - SP2 Entity ID: {{ sp_service_2.entity_id }}
+          3. Set Reply URLs:
+             - SP1: https://{{ dns2_name }}/saml/sp/profile/post/acs
+             - SP2: https://{{ dns3_name }}/saml/sp/profile/post/acs
+          4. Assign users/groups to the applications
+
+          ============================================================
+      tags:
+        - always

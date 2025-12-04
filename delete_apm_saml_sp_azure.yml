@@ -1,0 +1,613 @@
+---
+###############################################################################
+# Solution 14: Delete SAML SP with Azure AD IDP
+###############################################################################
+#
+# This playbook removes all Solution 14 components with confirmation
+# Requires typing "DELETE" to proceed
+#
+# Usage:
+#   ansible-playbook delete_apm_saml_sp_azure.yml
+#
+# To skip confirmation (for automation):
+#   ansible-playbook delete_apm_saml_sp_azure.yml -e "confirm_delete=true"
+#
+###############################################################################
+
+- name: Delete Solution 14 - SAML SP with Azure AD IDP (Interactive)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution14.yml
+
+  vars:
+    confirm_delete: false
+
+  tasks:
+    ###############################################
+    # Pre-flight Check
+    ###############################################
+    - name: Verify BIG-IP connectivity
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/version"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+        timeout: 30
+      delegate_to: localhost
+
+    ###############################################
+    # Discovery - Find Existing Objects
+    ###############################################
+    - name: Check for existing PSP access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      register: psp_profile_check
+      ignore_errors: yes
+
+    - name: Check for existing PRP policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-prp"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      register: prp_policy_check
+      ignore_errors: yes
+
+    - name: Check for existing SAML SP Service 1
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/~Common~{{ sp_service_1.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      register: sp1_check
+      ignore_errors: yes
+
+    - name: Check for existing SAML SP Service 2
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/~Common~{{ sp_service_2.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      register: sp2_check
+      ignore_errors: yes
+
+    - name: Check for AS3 application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404, 422]
+        timeout: 30
+      delegate_to: localhost
+      register: as3_check
+      ignore_errors: yes
+
+    ###############################################
+    # Display What Will Be Deleted
+    ###############################################
+    - name: Display objects to be deleted
+      debug:
+        msg:
+          - "=============================================="
+          - "Solution 14 Deletion Preview"
+          - "=============================================="
+          - ""
+          - "The following objects will be DELETED:"
+          - ""
+          - "PSP Access Profile: {{ vs1_name }}-psp {{ '(EXISTS)' if psp_profile_check.status == 200 else '(not found)' }}"
+          - "PRP Access Policy: {{ vs1_name }}-prp {{ '(EXISTS)' if prp_policy_check.status == 200 else '(not found)' }}"
+          - "SAML SP Service 1: {{ sp_service_1.name }} {{ '(EXISTS)' if sp1_check.status == 200 else '(not found)' }}"
+          - "SAML SP Service 2: {{ sp_service_2.name }} {{ '(EXISTS)' if sp2_check.status == 200 else '(not found)' }}"
+          - "AS3 Application: {{ partition_name }} {{ '(EXISTS)' if as3_check.status == 200 else '(not found)' }}"
+          - ""
+          - "Additional objects to be removed:"
+          - "  - IDP Connectors: {{ idp_connector_1.name }}, {{ idp_connector_2.name }}"
+          - "  - Subroutines: {{ vs2_name }}-prp, {{ vs3_name }}-prp"
+          - "  - Policy items, agents, customization groups"
+          - "  - Backend pools: {{ vs1_name }}-{{ vs2_name }}-pool, {{ vs1_name }}-{{ vs3_name }}-pool"
+          - "  - IDP Certificates (optional)"
+          - ""
+          - "=============================================="
+
+    ###############################################
+    # Confirmation Required
+    ###############################################
+    - name: Require confirmation to proceed
+      pause:
+        prompt: |
+
+          WARNING: This action cannot be undone!
+
+          To proceed with deletion, type 'DELETE' (case-sensitive):
+      register: user_confirmation
+      when: not confirm_delete
+
+    - name: Validate confirmation
+      fail:
+        msg: "Deletion cancelled. You must type 'DELETE' to proceed."
+      when:
+        - not confirm_delete
+        - user_confirmation.user_input != 'DELETE'
+
+    - name: Confirmation received
+      debug:
+        msg: "Confirmation received. Proceeding with deletion..."
+      when: confirm_delete or user_confirmation.user_input == 'DELETE'
+
+    ###############################################
+    # Remove AS3 Application
+    ###############################################
+    - name: Remove AS3 Application partition
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404, 422]
+        timeout: 300
+      delegate_to: localhost
+      register: as3_delete_result
+      ignore_errors: yes
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 Application: {{ 'DELETED' if as3_delete_result.status in [200, 204] else 'Not found or already removed' }}"
+
+    ###############################################
+    # Remove PSP Access Profile
+    ###############################################
+    - name: Remove PSP access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: psp_profile_delete_result
+      ignore_errors: yes
+
+    - name: Display PSP profile removal result
+      debug:
+        msg: "PSP Access Profile: {{ 'DELETED' if psp_profile_delete_result.status == 200 else 'Not found' }}"
+
+    ###############################################
+    # Remove PRP Customization Group Set
+    ###############################################
+    - name: Remove PRP customization group set
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group-set/~Common~{{ vs1_name }}-prp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      ignore_errors: yes
+
+    ###############################################
+    # Remove PRP Access Policy
+    ###############################################
+    - name: Remove PRP access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-prp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      register: prp_delete_result
+      ignore_errors: yes
+
+    - name: Display PRP deletion result
+      debug:
+        msg: "PRP Access Policy: {{ 'DELETED' if prp_delete_result.status == 200 else 'Not found' }}"
+
+    ###############################################
+    # Remove PSP Access Policy
+    ###############################################
+    - name: Remove PSP access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 60
+      delegate_to: localhost
+      ignore_errors: yes
+
+    ###############################################
+    # Remove Subroutine Policies
+    ###############################################
+    - name: Remove subroutine policies
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs2_name }}-prp"
+        - "{{ vs3_name }}-prp"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Remove PRP Policy Items
+    ###############################################
+    - name: Remove PRP policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        # Main PRP items
+        - "{{ vs1_name }}-prp_ent"
+        - "{{ vs1_name }}-prp_act_url_branching_perrq"
+        - "{{ vs1_name }}-prp_mac_{{ vs2_name }}"
+        - "{{ vs1_name }}-prp_mac_{{ vs3_name }}"
+        - "{{ vs1_name }}-prp_act_pool_assign"
+        - "{{ vs1_name }}-prp_act_pool_assign_1"
+        - "{{ vs1_name }}-prp_end_allow"
+        - "{{ vs1_name }}-prp_end_reject"
+        # SP1 subroutine items
+        - "{{ vs2_name }}-prp_ent_in"
+        - "{{ vs2_name }}-prp_act_saml_auth_subsession"
+        - "{{ vs2_name }}-prp_ter_success"
+        - "{{ vs2_name }}-prp_ter_fail"
+        # SP2 subroutine items
+        - "{{ vs3_name }}-prp_ent_in"
+        - "{{ vs3_name }}-prp_act_saml_auth_subsession"
+        - "{{ vs3_name }}-prp_ter_success"
+        - "{{ vs3_name }}-prp_ter_fail"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Remove PSP Policy Items
+    ###############################################
+    - name: Remove PSP policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs1_name }}-psp_ent"
+        - "{{ vs1_name }}-psp_end_allow"
+        - "{{ vs1_name }}-psp_end_deny"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Remove PRP Policy Agents
+    ###############################################
+    - name: Remove PRP resource assign agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs1_name }}-prp_act_pool_assign_ag"
+        - "{{ vs1_name }}-prp_act_pool_assign_ag_1"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    - name: Remove category lookup agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/category-lookup/~Common~{{ vs1_name }}-prp_act_url_branching_perrq_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove SAML auth agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-saml/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs2_name }}-prp_act_saml_auth_subsession_ag"
+        - "{{ vs3_name }}-prp_act_saml_auth_subsession_ag"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    - name: Remove PRP allow ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/~Common~{{ vs1_name }}-prp_end_allow_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove PRP reject ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-reject/~Common~{{ vs1_name }}-prp_end_reject_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      ignore_errors: yes
+
+    ###############################################
+    # Remove PSP Policy Agents
+    ###############################################
+    - name: Remove PSP allow ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/~Common~{{ vs1_name }}-psp_end_allow_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove PSP deny ending agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/~Common~{{ vs1_name }}-psp_end_deny_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      ignore_errors: yes
+
+    ###############################################
+    # Remove Customization Groups
+    ###############################################
+    - name: Remove PSP customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs1_name }}-psp_logout"
+        - "{{ vs1_name }}-psp_eps"
+        - "{{ vs1_name }}-psp_errormap"
+        - "{{ vs1_name }}-psp_framework_installation"
+        - "{{ vs1_name }}-psp_general_ui"
+        - "{{ vs1_name }}-psp_end_deny_ag"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    - name: Remove PRP customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs1_name }}-prp_logout"
+        - "{{ vs1_name }}-prp_eps"
+        - "{{ vs1_name }}-prp_errormap"
+        - "{{ vs1_name }}-prp_framework_installation"
+        - "{{ vs1_name }}-prp_general_ui"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Remove SAML SP Services
+    ###############################################
+    - name: Remove SAML SP Services
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ sp_service_1.name }}"
+        - "{{ sp_service_2.name }}"
+      loop_control:
+        label: "{{ item }}"
+      register: sp_delete_results
+      ignore_errors: yes
+
+    - name: Display SAML SP removal results
+      debug:
+        msg:
+          - "SAML SP Service 1 ({{ sp_service_1.name }}): DELETED"
+          - "SAML SP Service 2 ({{ sp_service_2.name }}): DELETED"
+
+    ###############################################
+    # Remove SAML IDP Connectors
+    ###############################################
+    - name: Remove SAML IDP Connectors
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/saml-idp-connector/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ idp_connector_1.name }}"
+        - "{{ idp_connector_2.name }}"
+      loop_control:
+        label: "{{ item }}"
+      register: idp_delete_results
+      ignore_errors: yes
+
+    - name: Display IDP Connector removal results
+      debug:
+        msg:
+          - "IDP Connector 1 ({{ idp_connector_1.name }}): DELETED"
+          - "IDP Connector 2 ({{ idp_connector_2.name }}): DELETED"
+
+    ###############################################
+    # Remove Backend Pools (from Common partition)
+    ###############################################
+    - name: Remove backend pools
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ vs1_name }}-{{ vs2_name }}-pool"
+        - "{{ vs1_name }}-{{ vs3_name }}-pool"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Remove IDP Certificates (Optional)
+    ###############################################
+    - name: Remove IDP certificates
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ idp1_cert.name }}"
+        - "{{ idp2_cert.name }}"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Remove Backend Nodes (if not shared)
+    ###############################################
+    - name: Remove backend nodes
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 400, 404]
+        timeout: 30
+      delegate_to: localhost
+      loop:
+        - "{{ sp1_backend.node_address }}"
+        - "{{ sp2_backend.node_address }}"
+      loop_control:
+        label: "{{ item }}"
+      ignore_errors: yes
+
+    ###############################################
+    # Deletion Summary
+    ###############################################
+    - name: Deletion Summary
+      debug:
+        msg:
+          - "=============================================="
+          - "Solution 14 Deletion Complete"
+          - "=============================================="
+          - ""
+          - "Deleted Components:"
+          - "  - AS3 Application: {{ partition_name }}"
+          - "  - PSP Access Profile: {{ vs1_name }}-psp"
+          - "  - PSP Access Policy: {{ vs1_name }}-psp"
+          - "  - PRP Access Policy: {{ vs1_name }}-prp"
+          - "  - Subroutines: {{ vs2_name }}-prp, {{ vs3_name }}-prp"
+          - "  - SAML SP Services: {{ sp_service_1.name }}, {{ sp_service_2.name }}"
+          - "  - IDP Connectors: {{ idp_connector_1.name }}, {{ idp_connector_2.name }}"
+          - "  - Backend Pools"
+          - "  - IDP Certificates"
+          - "  - Policy Items, Agents, Customization Groups"
+          - ""
+          - "Note: Backend nodes may not be deleted if shared with other solutions"
+          - ""
+          - "=============================================="

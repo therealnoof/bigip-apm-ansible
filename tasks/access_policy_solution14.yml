@@ -1,0 +1,1204 @@
+---
+###############################################################################
+# Solution 14: SAML SP with Azure AD IDP - Access Policy
+###############################################################################
+#
+# This creates both PSP (Per-Session Policy) and PRP (Per-Request Policy)
+#
+# PSP Flow:  Start → Allow (simple pass-through)
+#
+# PRP Flow:  Start → URL Branching → sp.acme.com  → SAML Auth (subroutine) → Pool Assign → Allow
+#                                 → sp1.acme.com → SAML Auth (subroutine) → Pool Assign → Allow
+#                                 → (fallback)   → Reject
+#
+###############################################################################
+
+#==============================================================================
+# SECTION 1: PSP (PER-SESSION POLICY) - Simple Allow Policy
+#==============================================================================
+
+# =========================================================================
+# CREATE PSP TRANSACTION
+# =========================================================================
+
+- name: "[PSP] Create transaction for PSP policy creation"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+  register: psp_transaction_result
+  tags:
+    - policy
+    - psp
+
+- name: "[PSP] Store PSP transaction ID"
+  set_fact:
+    psp_trans_id: "{{ psp_transaction_result.json.transId }}"
+  tags:
+    - policy
+    - psp
+
+- name: "[PSP] Display PSP transaction ID"
+  debug:
+    msg: "PSP Transaction ID: {{ psp_trans_id }}"
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# CREATE PSP CUSTOMIZATION GROUPS
+# =========================================================================
+
+- name: "[PSP] Create baseline customization groups"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 409]
+  loop: "{{ psp_customization_groups }}"
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# CREATE PSP DENY ENDING
+# =========================================================================
+
+- name: "[PSP] Create deny ending agent"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny_ag"
+      partition: "Common"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: "[PSP] Create deny ending policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+      caption: "Deny"
+      color: 2
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-psp_end_deny_ag"
+          partition: "Common"
+          type: "ending-deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# CREATE PSP ALLOW ENDING
+# =========================================================================
+
+- name: "[PSP] Create allow ending agent"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_allow_ag"
+      partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+- name: "[PSP] Create allow ending policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+      caption: "Allow"
+      color: 1
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-psp_end_allow_ag"
+          partition: "Common"
+          type: "ending-allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# CREATE PSP START ITEM (direct to Allow)
+# =========================================================================
+
+- name: "[PSP] Create start policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+      caption: "Start"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# CREATE PSP ACCESS POLICY
+# =========================================================================
+
+- name: "[PSP] Create access policy"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp"
+      partition: "Common"
+      defaultEnding: "{{ vs1_name }}-psp_end_deny"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "{{ vs1_name }}-psp_ent"
+      type: "access-policy"
+      items:
+        - name: "{{ vs1_name }}-psp_end_allow"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_deny"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_ent"
+          partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# CREATE PSP ACCESS PROFILE
+# =========================================================================
+
+- name: "[PSP] Create access profile"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ psp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp"
+      partition: "Common"
+      acceptLanguages:
+        - "en"
+      accessPolicy: "/Common/{{ vs1_name }}-psp"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_logout"
+      epsGroup: "/Common/{{ vs1_name }}-psp_eps"
+      errormapGroup: "/Common/{{ vs1_name }}-psp_errormap"
+      frameworkInstallationGroup: "/Common/{{ vs1_name }}-psp_framework_installation"
+      generalUiGroup: "/Common/{{ vs1_name }}-psp_general_ui"
+      accessPolicyTimeout: "{{ access_profile.access_policy_timeout }}"
+      defaultLanguage: "en"
+      httponlyCookie: "false"
+      inactivityTimeout: "{{ access_profile.inactivity_timeout }}"
+      logoutUriTimeout: 5
+      maxConcurrentSessions: 0
+      maxConcurrentUsers: 0
+      maxFailureDelay: 5
+      maxInProgressSessions: 128
+      maxSessionTimeout: "{{ access_profile.max_session_timeout }}"
+      minFailureDelay: 2
+      modifiedSinceLastPolicySync: "false"
+      persistentCookie: "false"
+      restrictToSingleClientIp: "false"
+      scope: "profile"
+      secureCookie: "true"
+      type: "all"
+      useHttp_503OnError: "false"
+      userIdentityMethod: "http"
+      logSettings: "{{ access_profile.log_settings }}"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# COMMIT PSP TRANSACTION
+# =========================================================================
+
+- name: "[PSP] Commit transaction"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ psp_trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 409]
+  register: psp_commit_result
+  tags:
+    - policy
+    - psp
+
+- name: "[PSP] Display transaction commit result"
+  debug:
+    msg: "PSP Transaction {{ psp_trans_id }} committed: {{ psp_commit_result.status }}"
+  tags:
+    - policy
+    - psp
+
+# =========================================================================
+# APPLY PSP POLICY
+# =========================================================================
+
+- name: "[PSP] Apply access policy"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200]
+  register: psp_apply_result
+  tags:
+    - policy
+    - psp
+
+- name: "[PSP] Display policy apply result"
+  debug:
+    msg: "PSP {{ vs1_name }}-psp applied successfully"
+  tags:
+    - policy
+    - psp
+
+#==============================================================================
+# SECTION 2: PRP (PER-REQUEST POLICY) - URL Branching with SAML Subroutines
+#==============================================================================
+
+# =========================================================================
+# CREATE PRP TRANSACTION
+# =========================================================================
+
+- name: "[PRP] Create transaction for PRP policy creation"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+  register: prp_transaction_result
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Store PRP transaction ID"
+  set_fact:
+    prp_trans_id: "{{ prp_transaction_result.json.transId }}"
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Display PRP transaction ID"
+  debug:
+    msg: "PRP Transaction ID: {{ prp_trans_id }}"
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE PRP CUSTOMIZATION GROUPS
+# =========================================================================
+
+- name: "[PRP] Create baseline customization groups"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 409]
+  loop: "{{ prp_customization_groups }}"
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE PRP ALLOW ENDING
+# =========================================================================
+
+- name: "[PRP] Create allow ending agent"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_end_allow_ag"
+      partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Create allow ending policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_end_allow"
+      partition: "Common"
+      caption: "Allow"
+      color: 1
+      itemType: "ending"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-prp_end_allow_ag"
+          partition: "Common"
+          type: "ending-allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE PRP REJECT ENDING
+# =========================================================================
+
+- name: "[PRP] Create reject ending agent"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-reject/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_end_reject_ag"
+      partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Create reject ending policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_end_reject"
+      partition: "Common"
+      caption: "Reject"
+      color: 2
+      itemType: "ending"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-prp_end_reject_ag"
+          partition: "Common"
+          type: "ending-reject"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE POOL ASSIGNMENT AGENTS AND POLICY ITEMS
+# =========================================================================
+
+# Pool assign agent for SP 1 (sp.acme.com)
+- name: "[PRP] Create pool assign agent for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_act_pool_assign_ag"
+      partition: "Common"
+      type: "pool"
+      rules:
+        - pool: "/Common/{{ vs1_name }}-{{ vs2_name }}-pool"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Create pool assign policy item for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_act_pool_assign"
+      partition: "Common"
+      caption: "{{ vs2_name }}_pool"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-prp_act_pool_assign_ag"
+          partition: "Common"
+          type: "resource-assign"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-prp_end_allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Pool assign agent for SP 2 (sp1.acme.com)
+- name: "[PRP] Create pool assign agent for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/resource-assign/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_act_pool_assign_ag_1"
+      partition: "Common"
+      type: "pool"
+      rules:
+        - pool: "/Common/{{ vs1_name }}-{{ vs3_name }}-pool"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Create pool assign policy item for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_act_pool_assign_1"
+      partition: "Common"
+      caption: "{{ vs3_name }}_pool"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-prp_act_pool_assign_ag_1"
+          partition: "Common"
+          type: "resource-assign"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-prp_end_allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE SUBROUTINE FOR SP 1 (sp.acme.com)
+# =========================================================================
+
+# Entry point for SP1 subroutine
+- name: "[PRP] Create subroutine entry for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs2_name }}-prp_ent_in"
+      partition: "Common"
+      caption: "In"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs2_name }}-prp_act_saml_auth_subsession"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Success terminal for SP1 subroutine
+- name: "[PRP] Create success terminal for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs2_name }}-prp_ter_success"
+      partition: "Common"
+      caption: "Success"
+      color: 1
+      itemType: "terminal-out"
+      loop: "false"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Fail terminal for SP1 subroutine
+- name: "[PRP] Create fail terminal for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs2_name }}-prp_ter_fail"
+      partition: "Common"
+      caption: "Fail"
+      color: 2
+      itemType: "terminal-out"
+      loop: "false"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# SAML Auth agent for SP1 subroutine
+- name: "[PRP] Create SAML auth agent for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-saml"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs2_name }}-prp_act_saml_auth_subsession_ag"
+      partition: "Common"
+      forceAuthn: "use-aaa-server-setting"
+      server: "/Common/{{ dns2_name }}-sp-serv"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# SAML Auth policy item for SP1 subroutine
+- name: "[PRP] Create SAML auth policy item for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs2_name }}-prp_act_saml_auth_subsession"
+      partition: "Common"
+      caption: "SAML Auth"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs2_name }}-prp_act_saml_auth_subsession_ag"
+          partition: "Common"
+          type: "aaa-saml"
+      rules:
+        - caption: "Successful"
+          expression: "expr {[mcget {subsession.saml.last.result}] == 1}"
+          nextItem: "/Common/{{ vs2_name }}-prp_ter_success"
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs2_name }}-prp_ter_fail"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Create subroutine policy for SP1
+- name: "[PRP] Create subroutine for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs2_name }}-prp"
+      partition: "Common"
+      caption: "{{ vs2_name }}"
+      defaultEnding: "/Common/{{ vs2_name }}-prp_ter_fail"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "/Common/{{ vs2_name }}-prp_ent_in"
+      type: "subroutine"
+      items:
+        - name: "{{ vs2_name }}-prp_act_saml_auth_subsession"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs2_name }}-prp_ent_in"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs2_name }}-prp_ter_fail"
+          partition: "Common"
+          priority: 5
+        - name: "{{ vs2_name }}-prp_ter_success"
+          partition: "Common"
+          priority: 4
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Create macro call item for SP1
+- name: "[PRP] Create macro call for {{ vs2_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_mac_{{ vs2_name }}"
+      partition: "Common"
+      caption: "{{ vs2_name }}"
+      color: 1
+      itemType: "macro-call"
+      loop: "false"
+      macro: "/Common/{{ vs2_name }}-prp"
+      rules:
+        - caption: "Success"
+          nextItem: "/Common/{{ vs1_name }}-prp_act_pool_assign"
+        - caption: "Fail"
+          nextItem: "/Common/{{ vs1_name }}-prp_end_reject"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE SUBROUTINE FOR SP 2 (sp1.acme.com)
+# =========================================================================
+
+# Entry point for SP2 subroutine
+- name: "[PRP] Create subroutine entry for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs3_name }}-prp_ent_in"
+      partition: "Common"
+      caption: "In"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs3_name }}-prp_act_saml_auth_subsession"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Success terminal for SP2 subroutine
+- name: "[PRP] Create success terminal for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs3_name }}-prp_ter_success"
+      partition: "Common"
+      caption: "Success"
+      color: 1
+      itemType: "terminal-out"
+      loop: "false"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Fail terminal for SP2 subroutine
+- name: "[PRP] Create fail terminal for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs3_name }}-prp_ter_fail"
+      partition: "Common"
+      caption: "Fail"
+      color: 2
+      itemType: "terminal-out"
+      loop: "false"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# SAML Auth agent for SP2 subroutine
+- name: "[PRP] Create SAML auth agent for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-saml/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs3_name }}-prp_act_saml_auth_subsession_ag"
+      partition: "Common"
+      forceAuthn: "use-aaa-server-setting"
+      server: "/Common/{{ dns3_name }}-sp-serv"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# SAML Auth policy item for SP2 subroutine
+- name: "[PRP] Create SAML auth policy item for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs3_name }}-prp_act_saml_auth_subsession"
+      partition: "Common"
+      caption: "SAML Auth"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs3_name }}-prp_act_saml_auth_subsession_ag"
+          partition: "Common"
+          type: "aaa-saml"
+      rules:
+        - caption: "Successful"
+          expression: "expr {[mcget {subsession.saml.last.result}] == 1}"
+          nextItem: "/Common/{{ vs3_name }}-prp_ter_success"
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs3_name }}-prp_ter_fail"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Create subroutine policy for SP2
+- name: "[PRP] Create subroutine for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs3_name }}-prp"
+      partition: "Common"
+      caption: "{{ vs3_name }}"
+      defaultEnding: "/Common/{{ vs3_name }}-prp_ter_fail"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "/Common/{{ vs3_name }}-prp_ent_in"
+      type: "subroutine"
+      items:
+        - name: "{{ vs3_name }}-prp_act_saml_auth_subsession"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs3_name }}-prp_ent_in"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs3_name }}-prp_ter_fail"
+          partition: "Common"
+          priority: 5
+        - name: "{{ vs3_name }}-prp_ter_success"
+          partition: "Common"
+          priority: 4
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# Create macro call item for SP2
+- name: "[PRP] Create macro call for {{ vs3_name }}"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_mac_{{ vs3_name }}"
+      partition: "Common"
+      caption: "{{ vs3_name }}"
+      color: 1
+      itemType: "macro-call"
+      loop: "false"
+      macro: "/Common/{{ vs3_name }}-prp"
+      rules:
+        - caption: "Success"
+          nextItem: "/Common/{{ vs1_name }}-prp_act_pool_assign_1"
+        - caption: "Fail"
+          nextItem: "/Common/{{ vs1_name }}-prp_end_reject"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE URL BRANCHING (CATEGORY LOOKUP)
+# =========================================================================
+
+- name: "[PRP] Create category lookup agent for URL branching"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/category-lookup"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_act_url_branching_perrq_ag"
+      partition: "Common"
+      input: "http-uri"
+      lookupType: "custom-only"
+      resetOnFailure: "enable"
+      safeSearch: "enable"
+      type: "branch-only"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Create URL branching policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_act_url_branching_perrq"
+      partition: "Common"
+      caption: "URL Branching"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-prp_act_url_branching_perrq_ag"
+          partition: "Common"
+          type: "category-lookup"
+      rules:
+        - caption: "{{ dns3_name }}"
+          expression: "expr {[mcget {perflow.branching.url}] starts_with \"https://{{ dns3_name }}\"}"
+          nextItem: "/Common/{{ vs1_name }}-prp_mac_{{ vs3_name }}"
+        - caption: "{{ dns2_name }}"
+          expression: "expr {[mcget {perflow.branching.url}] starts_with \"https://{{ dns2_name }}\"}"
+          nextItem: "/Common/{{ vs1_name }}-prp_mac_{{ vs2_name }}"
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-prp_end_reject"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE PRP START ITEM
+# =========================================================================
+
+- name: "[PRP] Create start policy item"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp_ent"
+      partition: "Common"
+      caption: "Start"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-prp_act_url_branching_perrq"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE PRP ACCESS POLICY
+# =========================================================================
+
+- name: "[PRP] Create per-request policy"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp"
+      partition: "Common"
+      defaultEnding: "/Common/{{ vs1_name }}-prp_end_reject"
+      macros:
+        - "/Common/{{ vs2_name }}-prp"
+        - "/Common/{{ vs3_name }}-prp"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "/Common/{{ vs1_name }}-prp_ent"
+      type: "per-rq-policy"
+      items:
+        - name: "{{ vs1_name }}-prp_act_pool_assign_1"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_act_pool_assign"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_act_url_branching_perrq"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_mac_{{ vs2_name }}"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_mac_{{ vs3_name }}"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_end_allow"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_end_reject"
+          partition: "Common"
+          priority: 0
+        - name: "{{ vs1_name }}-prp_ent"
+          partition: "Common"
+          priority: 0
+      perReqPolicyProperties:
+        - name: "{{ vs1_name }}-prp"
+          partition: "Common"
+          incompleteAction: "deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# CREATE PRP CUSTOMIZATION GROUP SET
+# =========================================================================
+
+- name: "[PRP] Create customization group set"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group-set/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ prp_trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-prp"
+      partition: "Common"
+      acceptLanguages:
+        - "en"
+      accessPolicy: "/Common/{{ vs1_name }}-prp"
+      customizationGroup: "/Common/{{ vs1_name }}-prp_logout"
+      defaultLanguage: "en"
+      epsGroup: "/Common/{{ vs1_name }}-prp_eps"
+      errormapGroup: "/Common/{{ vs1_name }}-prp_errormap"
+      frameworkInstallationGroup: "/Common/{{ vs1_name }}-prp_framework_installation"
+      generalUiGroup: "/Common/{{ vs1_name }}-prp_general_ui"
+    status_code: [200, 409]
+  tags:
+    - policy
+    - prp
+
+# =========================================================================
+# COMMIT PRP TRANSACTION
+# =========================================================================
+
+- name: "[PRP] Commit transaction"
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ prp_trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 409]
+  register: prp_commit_result
+  tags:
+    - policy
+    - prp
+
+- name: "[PRP] Display transaction commit result"
+  debug:
+    msg: "PRP Transaction {{ prp_trans_id }} committed: {{ prp_commit_result.status }}"
+  tags:
+    - policy
+    - prp

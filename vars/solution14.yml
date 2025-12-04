@@ -1,0 +1,434 @@
+---
+# =============================================================================
+# SOLUTION 14: SAML Service Provider with Azure AD Identity Provider
+# =============================================================================
+#
+# This solution implements a SAML Service Provider (SP) that authenticates
+# users via Azure Active Directory as the Identity Provider (IDP).
+#
+# ARCHITECTURE:
+#   - Two separate SAML SP applications (sp.acme.com, sp1.acme.com)
+#   - Each SP has its own Azure AD IDP connector
+#   - Per-Session Policy (PSP) with simple allow flow
+#   - Per-Request Policy (PRP) with URL branching and SAML subroutines
+#
+# Policy Flow:
+#   PSP:  Start → Allow (simple pass-through)
+#
+#   PRP:  Start → URL Branching → sp.acme.com  → SAML Auth → Pool Assign → Allow
+#                              → sp1.acme.com → SAML Auth → Pool Assign → Allow
+#                              → (fallback)   → Reject
+#
+# Components:
+#   - Azure AD IDP Connectors (one per SP application)
+#   - SAML SP Services (one per application)
+#   - Per-Session Policy (PSP) - simple allow policy
+#   - Per-Request Policy (PRP) - with subroutines/macros for each SP
+#   - Backend pools (one per SP application)
+#   - URL branching for request routing
+#
+# =============================================================================
+# DEPENDENCIES AND PREREQUISITES
+# =============================================================================
+#
+# BIG-IP REQUIREMENTS:
+#   - BIG-IP version 14.1+ recommended (13.1+ minimum)
+#   - APM module provisioned and licensed
+#   - AS3 extension installed (3.14.0+)
+#   - Sufficient APM sessions licensed for expected user count
+#
+# AZURE AD REQUIREMENTS:
+#   - Azure AD tenant with admin access
+#   - Two Enterprise Applications created in Azure AD (one per SP)
+#   - SAML federation metadata from each Azure AD application
+#   - Azure AD IDP certificates exported (Base64 X.509)
+#
+# NETWORK REQUIREMENTS:
+#   - BIG-IP must be able to reach Azure AD login endpoints
+#   - DNS resolution for *.microsoftonline.com
+#   - Clients must be able to reach BIG-IP VIP on port 443
+#   - DNS entries for both SP hostnames pointing to VIP
+#
+# BACKEND SERVER REQUIREMENTS:
+#   - Two backend web servers (one per SP application)
+#   - Backend servers configured to accept HTTPS connections
+#   - Application configured to trust BIG-IP as SAML SP
+#
+# AZURE AD CONFIGURATION STEPS:
+#   1. Create Enterprise Application in Azure AD for each SP
+#   2. Configure SAML SSO with Entity ID = https://<sp_hostname>
+#   3. Configure Reply URL = https://<sp_hostname>/saml/sp/profile/post/acs
+#   4. Download Federation Metadata XML or Base64 Certificate
+#   5. Note the Azure AD Entity ID and SSO URL
+#
+# =============================================================================
+# PRODUCTION DEPLOYMENT CHECKLIST
+# =============================================================================
+# Before deploying to production, review and update the following:
+#
+# 1. CERTIFICATES (CRITICAL)
+#    - Set wildcard_cert.use_self_signed: false
+#    - Import a proper CA-signed certificate before deployment
+#    - Update wildcard_cert.name to match your imported certificate
+#    - Update Azure AD IDP certificates (idp1_cert, idp2_cert)
+#    - Ensure certificate CN/SAN matches your SP hostnames
+#
+# 2. AZURE AD IDP CONFIGURATION
+#    - Update idp_connector_1 and idp_connector_2 with your Azure AD values
+#    - entity_id: Your Azure AD tenant's entity ID
+#    - sso_uri: Azure AD SAML SSO URL
+#    - single_logout_uri: Azure AD SAML logout URL
+#    - Replace idp1_cert/idp2_cert with your Azure AD signing certificates
+#
+# 3. SAML SP CONFIGURATION
+#    - Update sp_service_1 and sp_service_2 entity IDs
+#    - Update sp_host values to match your DNS names
+#    - Review assertion signing requirements
+#
+# 4. DNS AND NETWORKING
+#    - Update dns1_name (main VIP hostname)
+#    - Update dns2_name and dns3_name (SP application hostnames)
+#    - Update as3_config.virtual_address to your assigned VIP
+#    - Create DNS A records for all hostnames pointing to VIP
+#    - Ensure firewall rules allow 443 inbound to VIP
+#
+# 5. BACKEND SERVERS
+#    - Update sp1_backend and sp2_backend with your server IPs
+#    - Review pool port settings
+#    - Configure health monitors as needed
+#
+# 6. SECURITY HARDENING
+#    - Set validate_certs: yes for SSL certificate verification
+#    - Review SAML assertion requirements (signed, encrypted)
+#    - Consider enabling SAML request signing
+#    - Enable APM logging for audit trail
+#
+# =============================================================================
+# KNOWN LIMITATIONS AND CAVEATS
+# =============================================================================
+#
+# PER-REQUEST POLICY (PRP):
+#   - PRP requires both PSP and PRP profiles attached to virtual server
+#   - Subroutines are used for SAML authentication per SP
+#   - URL branching determines which SAML subroutine to execute
+#   - Macro items link subroutines to main PRP flow
+#
+# AZURE AD SPECIFIC:
+#   - Azure AD Entity ID format: https://sts.windows.net/<tenant-id>/
+#   - Each Enterprise App needs unique Entity ID
+#   - IDP certificates have expiration dates - monitor and renew
+#   - Azure AD may require Conditional Access policies
+#
+# MULTI-SP ARCHITECTURE:
+#   - Each SP application has its own IDP connector
+#   - Pool assignment is done per-SP after authentication
+#   - All SPs share the same virtual server IP
+#   - URL branching differentiates requests
+#
+# =============================================================================
+# BIG-IP Connection Settings
+# =============================================================================
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no  # PRODUCTION: Set to 'yes' for SSL verification
+bigip_validate_certs: no  # Alias for compatibility with shared tasks
+# =============================================================================
+
+# =============================================================================
+# NAMING CONFIGURATION
+# =============================================================================
+partition_name: "solution14"
+path_name: "solution14"
+
+# Primary virtual server name
+vs1_name: "solution14"
+# DNS name for the virtual server
+dns1_name: "solution14.acme.com"
+
+# SP Application 1 configuration
+# LAB:  Uses sp.acme.com
+# PROD: Update to your first SP application hostname
+vs2_name: "sp"
+dns2_name: "sp.acme.com"
+
+# SP Application 2 configuration
+# LAB:  Uses sp1.acme.com
+# PROD: Update to your second SP application hostname
+vs3_name: "sp1"
+dns3_name: "sp1.acme.com"
+
+# Customization type (modern or standard)
+custom_type: "modern"
+
+# =============================================================================
+# AZURE AD IDP CONFIGURATION
+# =============================================================================
+# Azure AD tenant information
+# LAB:  Uses F5 lab Azure AD tenant
+# PROD: Update with your Azure AD tenant ID and URLs
+
+# Your Azure AD tenant ID
+# LAB:  Uses lab tenant
+# PROD: Replace with your tenant ID (GUID format)
+azure_tenant_id: "8807dced-9637-4205-a520-423077750c60"
+
+# =============================================================================
+# IDP CONNECTOR 1 (for sp.acme.com)
+# =============================================================================
+idp_connector_1:
+  name: "{{ partition_name }}-1-idp-conn"
+  partition: "Common"
+  # LAB:  Uses lab Azure AD entity ID
+  # PROD: Update with your Azure AD entity ID
+  entity_id: "https://sts.windows.net/8807dced-9637-4205-a520-423077750c60/"
+  # Azure AD SSO endpoint
+  sso_uri: "https://login.microsoftonline.com/8807dced-9637-4205-a520-423077750c60/saml2"
+  sso_binding: "http-redirect"
+  # Azure AD logout endpoint
+  single_logout_uri: "https://login.microsoftonline.com/8807dced-9637-4205-a520-423077750c60/saml2"
+  single_logout_binding: "http-redirect"
+  single_logout_response_uri: "https://login.microsoftonline.com/8807dced-9637-4205-a520-423077750c60/saml2"
+  # Signature settings
+  signature_type: "rsa-sha256"
+  want_authn_request_signed: "false"
+  want_detached_signature: "false"
+  sign_artifact_resolution_rq: "false"
+  # Identity location
+  identity_location: "subject"
+  location_specific: "false"
+
+# =============================================================================
+# IDP CONNECTOR 2 (for sp1.acme.com)
+# =============================================================================
+idp_connector_2:
+  name: "{{ partition_name }}-2-idp-conn"
+  partition: "Common"
+  # LAB:  Uses lab Azure AD entity ID
+  # PROD: Update with your Azure AD entity ID (may be same tenant)
+  entity_id: "https://sts.windows.net/8807dced-9637-4205-a520-423077750c60/"
+  # Azure AD SSO endpoint
+  sso_uri: "https://login.microsoftonline.com/8807dced-9637-4205-a520-423077750c60/saml2"
+  sso_binding: "http-redirect"
+  # Azure AD logout endpoint
+  single_logout_uri: "https://login.microsoftonline.com/8807dced-9637-4205-a520-423077750c60/saml2"
+  single_logout_binding: "http-redirect"
+  single_logout_response_uri: "https://login.microsoftonline.com/8807dced-9637-4205-a520-423077750c60/saml2"
+  # Signature settings
+  signature_type: "rsa-sha256"
+  want_authn_request_signed: "false"
+  want_detached_signature: "false"
+  sign_artifact_resolution_rq: "false"
+  # Identity location
+  identity_location: "subject"
+  location_specific: "false"
+
+# =============================================================================
+# AZURE AD IDP CERTIFICATES
+# =============================================================================
+# Download these from Azure AD Enterprise Application > SAML > Certificate
+# LAB:  Uses lab Azure AD certificates
+# PROD: Replace with your Azure AD signing certificates
+
+# IDP Certificate 1 (for sp.acme.com)
+idp1_cert:
+  name: "{{ vs2_name }}-idp"
+  content: |
+    -----BEGIN CERTIFICATE-----
+    MIIC8DCCAdigAwIBAgIQf1zLbk4QSa1LIse63tCYJjANBgkqhkiG9w0BAQsFADA0MTIwMAYDVQQD
+    EylNaWNyb3NvZnQgQXp1cmUgRmVkZXJhdGVkIFNTTyBDZXJ0aWZpY2F0ZTAeFw0yMDEwMjEyMjI5
+    MTFaFw0yMzEwMjEyMjI5MTFaMDQxMjAwBgNVBAMTKU1pY3Jvc29mdCBBenVyZSBGZWRlcmF0ZWQg
+    U1NPIENlcnRpZmljYXRlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyyEXDII5ZX+g
+    gqwA/dzW3QvxGk2dfvO+XIf19JjvQszjssDQUZNeekp6I+Vds6DdzLf2cEH7Ri1XhCTlz4J06yaP
+    sUY3ZcXHCRfg6O1ZU4CYvZJ99mRrT9DnscCPhhHB0Hp+lS9SLpyulxBnMRi7PEJI0NM8J3ONEctJ
+    qLnBrP0jo0scswL/RALe/xgkcJyCjU/b7hrDdy3bKL0cxjG3uZkd+hz21SQyakkNKhWga+ogk8l+
+    W17z6pm9fA8q7uNXbU7Af8Cdct4DsbrFSMaPimJ7Nwoy9jlB2XQAc9sRIgEWz7c29PGd9zprrUUE
+    T5eRXq1QXoKPpMcnvFhrw4beqQIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQCwQfp2IxOONCRmB/li
+    PPax50wl9m8S61De1KFLfNHaMkjkJBop/C4/235/Y5XY5yTslhkVoaB6/jSa482KE5iTYdKFKcrT
+    iZIl5lqeG20SMvCm7weyU8Y6VPmTWKaVKPdPwg3u8fGujLT7JlwFphUHHnl3zidBwYfWY3nXqjPh
+    soqSGOrUWrwwl66Y80t7FR2ru/iNtynfRwspfpVAGD0wJFPs5UFEJwDoV/qKFIxsNKAiqAPkwTcz
+    6L6sxciSxagrQCebvzumm9jl3U+uI+31vl4IFQC5DiYnUM6ytST04JpsrYfmYtLzNKl52v9y/U2L
+    j30f8f4levAd8tAmfSyj
+    -----END CERTIFICATE-----
+
+# IDP Certificate 2 (for sp1.acme.com)
+idp2_cert:
+  name: "{{ vs3_name }}-idp"
+  content: |
+    -----BEGIN CERTIFICATE-----
+    MIIC8DCCAdigAwIBAgIQHpgR1PwxwolLjsmiJ9waYTANBgkqhkiG9w0BAQsFADA0MTIwMAYDVQQD
+    EylNaWNyb3NvZnQgQXp1cmUgRmVkZXJhdGVkIFNTTyBDZXJ0aWZpY2F0ZTAeFw0yMDEwMjEyMjMy
+    MzlaFw0yMzEwMjEyMjMyMzlaMDQxMjAwBgNVBAMTKU1pY3Jvc29mdCBBenVyZSBGZWRlcmF0ZWQg
+    U1NPIENlcnRpZmljYXRlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvPYmRHlUTHMH
+    EdXfbRO7UBUdhqaRIJ8Yce2jSkoVCgzrO5gO5vHNUuD9W8c/Shy5ewhLAUibrA1t2DkrENui72Kw
+    CpfroBdiU7zF5+z8AwYbS68rMHPxgOoRbtv0uLDLf0VWZa1b6RcdEKCTqBVwpX0DLH7A/y745wnd
+    07NEiixmREKRQop8kJbUIFmybcLTQ9L5h1mJGGihQaRoxFzD6aaFSDvzPLelZYr38McywWqpC+uT
+    hvNkjWOGZNywO69t7kyJwSOUTJjzyYwdem4MaRUmr+d7LQqybAMw+vBS656pFTh0dAGPWLq+RZaU
+    7y6VeDtQAdtrX1G0T41NzsnPOQIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQBCRYN0yv5f0GntM/5I
+    o5ulef/TH/z1Tc9WFawjx+6G2wtml2ASEszNKhBplk1jj1aZNMXvis5LkNLiCBdMfVNTr3tjrm6S
+    uP20aiXiZnqHodv66OhCFiQxGMTFrG9o97ZNiKF5nQYoPvF/SJvGoaQGgTCjBr/w3aOf5YxuCW5t
+    BE3T9LQfrJyD59cQQ+0OXG/YKlAehsYtBC4Gzh9LFGbkNb23SeQeEMTFWFiIs16vFTw92F75hXVT
+    2L/10VRcrxAxMPa4+3igLEVGIQpWRn4H3TQr6GRdah746VRYiCRubHswnAeszOcIUADgnDrS7K1f
+    aeQmhrCsPS5MGHdNQ67A
+    -----END CERTIFICATE-----
+
+# =============================================================================
+# SAML SP SERVICE 1 (sp.acme.com)
+# =============================================================================
+sp_service_1:
+  name: "{{ dns2_name }}-sp-serv"
+  partition: "Common"
+  # Entity ID for this SP (must match Azure AD configuration)
+  entity_id: "https://{{ dns2_name }}"
+  sp_host: "{{ dns2_name }}"
+  sp_scheme: "https"
+  # Assertion consumer service settings
+  assertion_consumer_binding: "http-post"
+  auth_context_comparison: "exact"
+  # Signing and encryption
+  want_assertion_signed: "true"
+  want_assertion_encrypted: "false"
+  is_authn_request_signed: "false"
+  # Name ID settings
+  name_id_policy_allow_create: "true"
+  # Location specific
+  location_specific: "false"
+  force_authn: "false"
+
+# =============================================================================
+# SAML SP SERVICE 2 (sp1.acme.com)
+# =============================================================================
+sp_service_2:
+  name: "{{ dns3_name }}-sp-serv"
+  partition: "Common"
+  # Entity ID for this SP (must match Azure AD configuration)
+  entity_id: "https://{{ dns3_name }}"
+  sp_host: "{{ dns3_name }}"
+  sp_scheme: "https"
+  # Assertion consumer service settings
+  assertion_consumer_binding: "http-post"
+  auth_context_comparison: "exact"
+  # Signing and encryption
+  want_assertion_signed: "true"
+  want_assertion_encrypted: "false"
+  is_authn_request_signed: "false"
+  # Name ID settings
+  name_id_policy_allow_create: "true"
+  # Location specific
+  location_specific: "false"
+  force_authn: "false"
+
+# =============================================================================
+# BACKEND SERVER CONFIGURATION
+# =============================================================================
+# LAB:  Uses lab IIS servers
+# PROD: Update with your actual backend server IPs
+
+# Backend for SP 1 (sp.acme.com)
+sp1_backend:
+  node_address: "10.1.20.6"  # PROD: Your first SP backend server
+  pool_port: 443
+
+# Backend for SP 2 (sp1.acme.com)
+sp2_backend:
+  node_address: "10.1.20.7"  # PROD: Your second SP backend server
+  pool_port: 443
+
+# =============================================================================
+# ACCESS PROFILE CONFIGURATION (PSP)
+# =============================================================================
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  type: "all"
+  default_language: "en"
+  accept_languages:
+    - "en"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  max_session_timeout: 604800
+  log_settings:
+    - "/Common/default-log-setting"
+
+# =============================================================================
+# PER-REQUEST POLICY CONFIGURATION (PRP)
+# =============================================================================
+prp_policy:
+  name: "{{ vs1_name }}-prp"
+  partition: "Common"
+  type: "per-rq-policy"
+  max_macro_loop_count: 1
+  oneshot_macro: "false"
+  incomplete_action: "deny"
+
+# =============================================================================
+# CUSTOMIZATION GROUPS - PSP
+# =============================================================================
+psp_customization_groups:
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+
+# =============================================================================
+# CUSTOMIZATION GROUPS - PRP
+# =============================================================================
+prp_customization_groups:
+  - name: "{{ vs1_name }}-prp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-prp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-prp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-prp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-prp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+
+# =============================================================================
+# WILDCARD CERTIFICATE
+# =============================================================================
+# Certificate for HTTPS virtual server
+#
+# LAB MODE (use_self_signed: true):
+#   - Auto-generates a self-signed certificate
+#   - WARNING: Self-signed certs cause browser warnings
+#
+# PRODUCTION MODE (use_self_signed: false):
+#   - Requires certificate pre-imported to BIG-IP
+#   - Update 'name' to match your imported certificate name
+#   - Certificate should cover all SP hostnames
+#
+wildcard_cert:
+  name: "acme.com-wildcard"      # PROD: Change to your imported cert name
+  use_self_signed: true          # PROD: Set to 'false'
+  common_name: "*.acme.com"      # Only used for self-signed generation
+
+# =============================================================================
+# AS3 CONFIGURATION
+# =============================================================================
+# PROD: Update virtual_address to your assigned VIP
+as3_config:
+  virtual_address: "10.1.10.114"  # PROD: Your virtual server IP
+  virtual_port: 443
+  snat: "auto"

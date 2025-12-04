@@ -279,6 +279,66 @@ Start → Allow (simple allow for RD Gateway traffic)
 
 **Source:** [solution12-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution12/postman/solution12-create.postman_collection.json)
 
+### Solution 14: SAML Service Provider with Azure AD Identity Provider
+- **SAML Service Provider** - BIG-IP APM acts as SAML SP with Azure AD integration
+- **Multi-Application Support** - Two separate SP applications (sp.acme.com, sp1.acme.com)
+- **Azure AD Federation** - Full SAML 2.0 federation with Microsoft Azure Active Directory
+- **Per-Request Policy (PRP)** - URL branching with SAML subroutines for each application
+- **Per-Session Policy (PSP)** - Simple allow pass-through for session initialization
+- **URL-Based Routing** - Category lookup agent routes requests to appropriate SP
+- **Subroutines/Macros** - Modular SAML authentication per SP application
+- **Backend Pool Assignment** - Dynamic pool assignment after SAML authentication
+- **Application Deployment** - AS3-based HTTPS virtual server with dual policy profiles
+
+**Use Case:** Enterprise scenarios requiring SAML SP integration with Azure AD for multiple web applications. Each application has its own Azure AD Enterprise Application configuration, enabling independent access control while sharing a single BIG-IP virtual server. Ideal for organizations using Microsoft 365 and Azure AD as their identity provider.
+
+**Prerequisites:**
+- Azure AD tenant with admin access
+- Enterprise Application created in Azure AD for each SP
+- Azure AD SAML metadata (Entity ID, SSO URL, Certificate)
+- DNS entries for all SP hostnames pointing to BIG-IP VIP
+
+**Authentication Flow:**
+1. User accesses SP application (sp.acme.com or sp1.acme.com)
+2. PRP URL branching identifies target application
+3. Appropriate SAML subroutine is invoked
+4. User redirected to Azure AD for authentication
+5. Azure AD authenticates user (MFA, Conditional Access, etc.)
+6. SAML assertion returned to BIG-IP SP
+7. Pool assignment routes to correct backend server
+8. User granted access to application
+
+**Policy Flow:**
+```
+PSP Policy:
+Start → Allow (pass-through for PRP to handle authentication)
+
+PRP Policy:
+Start → URL Branch → sp.acme.com  → SP Subroutine → SAML Auth → Pool Assign → Allow
+                  → sp1.acme.com → SP1 Subroutine → SAML Auth → Pool Assign → Allow
+                  → (fallback)   → Reject
+```
+
+**Key Components:**
+| Component | Name | Purpose |
+|-----------|------|---------|
+| PSP Profile | solution14-psp | Session initialization (simple allow) |
+| PRP Policy | solution14-prp | URL-based SAML authentication |
+| IDP Connector 1 | solution14-1-idp-conn | Azure AD connection for sp.acme.com |
+| IDP Connector 2 | solution14-2-idp-conn | Azure AD connection for sp1.acme.com |
+| SP Service 1 | sp.acme.com-sp-serv | SAML SP for first application |
+| SP Service 2 | sp1.acme.com-sp-serv | SAML SP for second application |
+
+**Azure AD Configuration Required:**
+
+| Setting | sp.acme.com | sp1.acme.com |
+|---------|-------------|--------------|
+| Entity ID | https://sp.acme.com | https://sp1.acme.com |
+| Reply URL | https://sp.acme.com/saml/sp/profile/post/acs | https://sp1.acme.com/saml/sp/profile/post/acs |
+| Sign-on URL | https://sp.acme.com | https://sp1.acme.com |
+
+**Source:** [solution14-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution14/postman/solution14-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -799,6 +859,89 @@ Client → Resource Server → /f5-oauth2/v1/introspect → Valid/Invalid
 └──────────────────────────────────────────────────────┘
 ```
 
+### Solution 14: SAML SP with Azure AD - Multi-Application Architecture
+
+```
+                                   ┌─────────────────────────────┐
+                                   │ Microsoft Azure AD          │
+                                   │                             │
+                                   │ Enterprise Applications:    │
+                                   │ - sp.acme.com              │
+                                   │ - sp1.acme.com             │
+                                   │                             │
+                                   │ Entity ID:                  │
+                                   │ https://sts.windows.net/    │
+                                   │         <tenant-id>/        │
+                                   └──────────────┬──────────────┘
+                                                  │ SAML 2.0
+                                                  │ (Redirect/POST)
+┌─────────────────────────────────────────────────┴───────────────────────────┐
+│ F5 BIG-IP - APM SAML Service Provider                                       │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ Virtual Server (HTTPS:443) - Single VIP for all SP applications       │ │
+│  │ - Client SSL Profile                                                   │ │
+│  │ - PSP Profile: solution14-psp (session initialization)               │ │
+│  │ - PRP Policy: solution14-prp (per-request authentication)            │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                         │                                                    │
+│  ┌──────────────────────┼───────────────────────────────────────────────┐   │
+│  │ Per-Session Policy (PSP)                                              │   │
+│  │                      ▼                                                │   │
+│  │    Start ────────► Allow (pass-through to PRP)                       │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                         │                                                    │
+│  ┌──────────────────────┼───────────────────────────────────────────────┐   │
+│  │ Per-Request Policy (PRP)                                              │   │
+│  │                      ▼                                                │   │
+│  │    Start ────► URL Branching (Host Header)                           │   │
+│  │                      │                                                │   │
+│  │           ┌──────────┼──────────┬───────────────┐                    │   │
+│  │           ▼          ▼          ▼               ▼                    │   │
+│  │     sp.acme.com  sp1.acme.com  Other       (fallback)               │   │
+│  │           │          │          │               │                    │   │
+│  │           ▼          ▼          ▼               ▼                    │   │
+│  │   ┌───────────┐ ┌────────────┐  │           Reject                   │   │
+│  │   │SP Macro   │ │SP1 Macro   │  │                                    │   │
+│  │   │(Subroutine)│ │(Subroutine)│  │                                    │   │
+│  │   └─────┬─────┘ └─────┬──────┘  │                                    │   │
+│  │         │             │          │                                    │   │
+│  │         ▼             ▼          │                                    │   │
+│  │   SAML Auth     SAML Auth        │                                    │   │
+│  │   (Azure AD)    (Azure AD)       │                                    │   │
+│  │         │             │          │                                    │   │
+│  │         ▼             ▼          │                                    │   │
+│  │   Pool Assign   Pool Assign      │                                    │   │
+│  │   (sp-pool)     (sp1-pool)       │                                    │   │
+│  │         │             │          │                                    │   │
+│  │         ▼             ▼          │                                    │   │
+│  │       Allow         Allow        │                                    │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌─────────────────────────────────┐  ┌─────────────────────────────────┐  │
+│  │ IDP Connector 1                  │  │ IDP Connector 2                  │  │
+│  │ - solution14-1-idp-conn         │  │ - solution14-2-idp-conn         │  │
+│  │ - Entity: Azure AD tenant       │  │ - Entity: Azure AD tenant       │  │
+│  │ - SSO: login.microsoftonline    │  │ - SSO: login.microsoftonline    │  │
+│  │ - For: sp.acme.com              │  │ - For: sp1.acme.com             │  │
+│  └─────────────────────────────────┘  └─────────────────────────────────┘  │
+│                                                                              │
+│  ┌─────────────────────────────────┐  ┌─────────────────────────────────┐  │
+│  │ SP Service 1                     │  │ SP Service 2                     │  │
+│  │ - sp.acme.com-sp-serv           │  │ - sp1.acme.com-sp-serv          │  │
+│  │ - Entity ID: https://sp.acme.com│  │ - Entity ID: https://sp1.acme   │  │
+│  │ - ACS: /saml/sp/profile/post/acs│  │ - ACS: /saml/sp/profile/post/acs│  │
+│  └─────────────────────────────────┘  └─────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────┘
+                    │                              │
+                    ▼                              ▼
+         ┌──────────────────┐          ┌──────────────────┐
+         │ Backend Server 1 │          │ Backend Server 2 │
+         │ 10.1.20.6:443   │          │ 10.1.20.7:443   │
+         │ (sp.acme.com)   │          │ (sp1.acme.com)  │
+         └──────────────────┘          └──────────────────┘
+```
+
 ## Project Structure
 
 ```
@@ -817,6 +960,9 @@ bigip-apm-ansible/
 ├── deploy_apm_oauth_as.yml           # Solution 8: OAuth Authorization Server
 ├── deploy_apm_oauth_rs.yml           # Solution 9: OAuth Resource Server
 ├── deploy_apm_oauth_as_rsa.yml       # Solution 10: OAuth AS with RS256 signing
+├── deploy_apm_oauth_client.yml       # Solution 11: OAuth Client with OIDC
+├── deploy_apm_rdg.yml                # Solution 12: Remote Desktop Gateway
+├── deploy_apm_saml_sp_azure.yml      # Solution 14: SAML SP with Azure AD
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
@@ -827,6 +973,9 @@ bigip-apm-ansible/
 ├── delete_apm_oauth_as.yml           # Solution 8: Interactive deletion playbook
 ├── delete_apm_oauth_rs.yml           # Solution 9: Interactive deletion playbook
 ├── delete_apm_oauth_as_rsa.yml       # Solution 10: Interactive deletion playbook
+├── delete_apm_oauth_client.yml       # Solution 11: Interactive deletion playbook
+├── delete_apm_rdg.yml                # Solution 12: Interactive deletion playbook
+├── delete_apm_saml_sp_azure.yml      # Solution 14: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
@@ -842,7 +991,10 @@ bigip-apm-ansible/
 │   ├── solution7.yml                 # Solution 7 variables (SAML + Sideband)
 │   ├── solution8.yml                 # Solution 8 variables (OAuth Authorization Server)
 │   ├── solution9.yml                 # Solution 9 variables (OAuth Resource Server)
-│   └── solution10.yml                # Solution 10 variables (OAuth AS with RS256)
+│   ├── solution10.yml                # Solution 10 variables (OAuth AS with RS256)
+│   ├── solution11.yml                # Solution 11 variables (OAuth Client)
+│   ├── solution12.yml                # Solution 12 variables (Remote Desktop Gateway)
+│   └── solution14.yml                # Solution 14 variables (SAML SP with Azure AD)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -867,6 +1019,9 @@ bigip-apm-ansible/
 │   ├── access_policy_solution8.yml    # Solution 8 policy with OAuth authorization
 │   ├── access_policy_solution9.yml    # Solution 9 policy with OAuth scope validation
 │   ├── access_policy_solution10.yml   # Solution 10 policy with OAuth authorization
+│   ├── access_policy_solution11.yml   # Solution 11 policy with OAuth client
+│   ├── access_policy_solution12.yml   # Solution 12 policy with RDG + AD auth
+│   ├── access_policy_solution14.yml   # Solution 14 policy with SAML SP + Azure AD (PRP)
 │   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
 │   ├── import_ca_certificate.yml      # CA certificate import (Solution 6)
 │   ├── kerberos_sso.yml               # Kerberos SSO profile (Solution 6)
@@ -1557,6 +1712,85 @@ ansible-playbook deploy_apm_oauth_as_rsa.yml --tags policy
 ansible-playbook deploy_apm_oauth_as_rsa.yml --tags application,as3
 ```
 
+### Solution 14: SAML Service Provider with Azure AD
+
+Deploy the SAML SP solution with Azure AD as the Identity Provider:
+
+```bash
+# Default: Self-signed certificate (DEMO/LAB only)
+ansible-playbook deploy_apm_saml_sp_azure.yml
+
+# Production: Pre-imported certificate
+ansible-playbook deploy_apm_saml_sp_azure.yml -e use_self_signed_cert=false
+```
+
+**Prerequisites:**
+- Azure AD tenant with admin access
+- Enterprise Application configured in Azure AD for each SP
+- Azure AD SAML metadata (Entity ID, SSO URL, Certificate)
+- DNS entries for all SP hostnames pointing to BIG-IP VIP
+
+**What Gets Deployed:**
+- **Azure AD IDP Connectors:** Two connectors (one per SP application)
+- **SAML SP Services:** Two SP services (sp.acme.com, sp1.acme.com)
+- **Per-Session Policy (PSP):** Simple allow policy for session initialization
+- **Per-Request Policy (PRP):** URL branching with SAML subroutines
+- **Backend Pools:** Two pools (one per SP application)
+- **Self-Signed Certificate (if enabled):** Auto-generated wildcard certificate
+- **AS3 Application:** HTTPS virtual server with dual policy profiles
+
+**Azure AD Enterprise Application Setup:**
+
+For each SP application (sp.acme.com, sp1.acme.com), configure in Azure AD:
+
+| Setting | Value |
+|---------|-------|
+| Entity ID (Identifier) | `https://sp.acme.com` or `https://sp1.acme.com` |
+| Reply URL (ACS) | `https://sp.acme.com/saml/sp/profile/post/acs` |
+| Sign-on URL | `https://sp.acme.com` or `https://sp1.acme.com` |
+
+**Configuration:**
+
+Before deploying, customize `vars/solution14.yml`:
+
+```yaml
+# Azure AD tenant ID
+azure_tenant_id: "your-tenant-id-guid"
+
+# IDP Connector 1 (for sp.acme.com)
+idp_connector_1:
+  entity_id: "https://sts.windows.net/your-tenant-id/"
+  sso_uri: "https://login.microsoftonline.com/your-tenant-id/saml2"
+
+# Backend servers
+sp1_backend:
+  node_address: "10.1.20.6"  # Your first SP backend server
+  pool_port: 443
+
+sp2_backend:
+  node_address: "10.1.20.7"  # Your second SP backend server
+  pool_port: 443
+
+# Virtual server
+as3_config:
+  virtual_address: "10.1.10.114"  # Your VIP
+```
+
+**Tag-Based Partial Deployment:**
+```bash
+# Deploy only certificates
+ansible-playbook deploy_apm_saml_sp_azure.yml --tags certificate
+
+# Deploy only SAML configuration
+ansible-playbook deploy_apm_saml_sp_azure.yml --tags saml
+
+# Deploy only access policies
+ansible-playbook deploy_apm_saml_sp_azure.yml --tags policy
+
+# Deploy only AS3 application
+ansible-playbook deploy_apm_saml_sp_azure.yml --tags application,as3
+```
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -1787,6 +2021,32 @@ ansible-playbook delete_apm_oauth_as_rsa.yml -e confirm_delete=true
 - Wildcard/self-signed certificate (may be used for other TLS services)
 
 **Note:** Certificates are preserved to avoid breaking other services. Delete manually if not needed.
+
+### Remove Solution 14 (SAML SP with Azure AD)
+
+To remove Solution 14 deployment:
+
+```bash
+ansible-playbook delete_apm_saml_sp_azure.yml -e confirm_delete=true
+```
+
+**Deletes:**
+- AS3 application tenant (solution14)
+- Per-Session Policy (PSP) access profile
+- Per-Request Policy (PRP) access policy
+- All PRP subroutines (sp-prp, sp1-prp)
+- All policy items and agents (URL branching, SAML auth, pool assignment, endings)
+- All customization groups
+- SAML SP services (sp.acme.com, sp1.acme.com)
+- Azure AD IDP connectors (2)
+- Backend pools (sp-pool, sp1-pool)
+- Azure AD IDP certificates
+
+**NOT Deleted (may be used by other services):**
+- Backend nodes (shared infrastructure)
+- Wildcard/self-signed certificate (may be used for other TLS services)
+
+**Note:** This solution uses a Per-Request Policy with subroutines, which requires careful deletion order to avoid dependency errors.
 
 ### Automated Cleanup (No Confirmation)
 
