@@ -177,12 +177,14 @@ policy_agents:
   # UPN Extract - Variable Assign agent
   # Extracts User Principal Name from X.509 certificate extension
   # Format: othername:UPN<user@domain>
+  # NOTE: BIG-IP API requires triple-escaping for quotes and double-escaping for backslash-n
+  # YAML -> JSON -> BIG-IP storage requires: \\\" for quotes, \\\\n for \n
   upn_extract:
     name: "{{ vs1_name }}-psp_act_variable_assign_ag"
     type: "general"
     variables:
       - append: "false"
-        expression: "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \\\"\\\\n\\\"]; foreach field $x509e_fields { if { $field contains \\\"othername:UPN\\\" } { set start [expr {[string first \\\"othername:UPN<\\\" $field] +14}]; return [string range $field $start [expr { [string first \\\">\\\" $field $start] - 1 } ] ]; } }; return \\\"UPN-NOT-FOUND\\\";"
+        expression: "set x509e_fields [split [mcget {session.ssl.cert.x509extension}] \\\"\\\\n\\\"]; foreach field $x509e_fields { if { $field contains \\\"othername:UPN\\\" } { set start [expr {[string first \\\"<\\\" $field] +1}]; return [string range $field $start [expr { [string first \\\">\\\" $field $start] - 1 } ] ]; } }; return \\\"UPN-NOT-FOUND\\\";"
         secure: "false"
         varname: "session.custom.upn"
 
