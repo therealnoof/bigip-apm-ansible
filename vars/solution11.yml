@@ -3,15 +3,7 @@
 # SOLUTION 11: OAuth Client with OIDC Integration
 # =============================================================================
 #
-# BIG-IP Connection Settings
-# =============================================================================
-bigip_mgmt: "{{ ansible_host }}"
-bigip_username: "{{ bigip_user }}"
-bigip_password: "{{ bigip_pass }}"
-bigip_port: 443
-validate_certs: no
-# =============================================================================
-# This solution implements an OAuth Client (Resource Server) that authenticates
+# This solution implements an OAuth Client (Relying Party) that authenticates
 # users via an external OAuth Authorization Server using OIDC.
 #
 # CRITICAL DEPENDENCY:
@@ -22,6 +14,52 @@ validate_certs: no
 # Policy Flow:
 #   Start → OAuth Client → (Success) → Allow
 #                       ↘ (Failure) → Deny
+#
+# =============================================================================
+# PRODUCTION DEPLOYMENT CHECKLIST
+# =============================================================================
+# Before deploying to production, review and update the following:
+#
+# 1. CERTIFICATES (CRITICAL)
+#    - Set wildcard_cert.use_self_signed: false
+#    - Import a proper CA-signed certificate before deployment
+#    - Update wildcard_cert.name to match your imported certificate
+#    - Update oauth_as.trusted_ca_bundle to your organization's CA
+#    - Set oauth_as.allow_self_signed_jwk: "no"
+#
+# 2. DNS AND NETWORKING
+#    - Update dns1_name to your actual DNS name (e.g., "app.company.com")
+#    - Update dns2_name to your OAuth AS DNS name
+#    - Set oauth_as.skip_discovery: false (use OIDC auto-discovery)
+#    - Update oauth_as.openid_cfg_uri to use DNS name, not IP
+#    - Ensure BIG-IP control plane can reach the OAuth AS endpoint
+#
+# 3. OAUTH CLIENT CONFIGURATION
+#    - Update oauth_client.redirect_uri to match your DNS
+#    - Review token lifetimes for your security requirements
+#    - Consider oauth_client.auth_type based on your needs
+#
+# 4. BACKEND SERVER
+#    - Update backend_server.node_address to your actual backend
+#    - Update as3_config.pool_members with your server pool
+#
+# 5. AUTHORIZATION SERVER REFERENCE
+#    - Update vs2_name, dns2_name, as_access_profile to match your AS
+#    - Update as_virtual_address to your AS IP (if using manual endpoints)
+#
+# 6. SECURITY HARDENING
+#    - Set validate_certs: yes for SSL certificate validation
+#    - Review and restrict token lifetimes
+#    - Consider enabling PKCE for additional security
+#
+# =============================================================================
+# BIG-IP Connection Settings
+# =============================================================================
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no  # PRODUCTION: Set to 'yes' for SSL verification
 # =============================================================================
 
 # =============================================================================
@@ -56,30 +94,40 @@ as_virtual_address: "10.1.10.110"
 
 oauth_as:
   # OIDC Discovery endpoint (/.well-known/openid-configuration)
-  # NOTE: For lab environments without proper DNS, use IP address instead of DNS name
-  # Production should use: "https://{{ dns2_name }}/f5-oauth2/v1/.well-known/openid-configuration"
+  # LAB:  Uses IP address (BIG-IP control plane can't resolve DNS)
+  # PROD: Use DNS name: "https://{{ dns2_name }}/f5-oauth2/v1/.well-known/openid-configuration"
   openid_cfg_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/.well-known/openid-configuration"
+
   # Trust bundle for verifying AS SSL certificate
+  # PROD: Update to your organization's CA certificate
   trusted_ca_bundle: "/Common/ca.acme.com"
+
   # Discovery interval in seconds
   discovery_interval: 60
-  # Allow self-signed JWK certificates (for lab/testing)
+
+  # Allow self-signed JWK certificates
+  # LAB:  "yes" - accepts self-signed certificates
+  # PROD: "no" - require CA-signed certificates
   allow_self_signed_jwk: "yes"
 
   # =============================================================================
-  # MANUAL ENDPOINT CONFIGURATION (for lab environments)
+  # OIDC DISCOVERY MODE
   # =============================================================================
-  # When OIDC discovery cannot reach the Authorization Server (e.g., network
-  # isolation between control plane and data plane), set skip_discovery: true
-  # and provide the endpoints manually below.
+  # skip_discovery: true  (DEFAULT - LAB)
+  #   - Uses manually configured endpoints below
+  #   - Works when BIG-IP control plane cannot reach AS virtual server IP
+  #   - Common in lab environments with network isolation
   #
-  # To find these values, query the AS's well-known endpoint from a client that
-  # can reach it, or check the Solution 8/10 deployment logs.
+  # skip_discovery: false (PRODUCTION)
+  #   - Uses automatic OIDC discovery from openid_cfg_uri
+  #   - Requires BIG-IP control plane to reach AS endpoint
+  #   - Automatically retrieves all OAuth endpoints from AS
   # =============================================================================
-  skip_discovery: true  # Set to false to use automatic OIDC discovery
+  skip_discovery: true  # PRODUCTION: Set to 'false' and ensure network connectivity
 
   # Manual endpoints (used when skip_discovery is true)
-  # These match the F5 OAuth AS endpoints from Solution 8/10
+  # LAB:  Uses IP address for all endpoints
+  # PROD: If using manual mode, use DNS names instead
   manual_endpoints:
     authorization_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/authorize"
     token_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/token"
@@ -227,27 +275,40 @@ customization_groups:
 # =============================================================================
 # BACKEND SERVER CONFIGURATION
 # =============================================================================
+# PROD: Update to your actual backend application servers
 backend_server:
-  node_address: "10.1.20.6"
-  pool_port: 80
+  node_address: "10.1.20.6"  # PROD: Your backend server IP
+  pool_port: 80              # PROD: Your backend server port
 
 # =============================================================================
 # WILDCARD CERTIFICATE
 # =============================================================================
 # Certificate for HTTPS virtual server
-# Set use_self_signed: true to auto-generate a self-signed certificate for lab
+#
+# LAB MODE (use_self_signed: true):
+#   - Auto-generates a self-signed certificate
+#   - Certificate name will be "oauth-client-cert"
+#   - WARNING: Self-signed certs cause browser warnings
+#
+# PRODUCTION MODE (use_self_signed: false):
+#   - Requires certificate pre-imported to BIG-IP
+#   - Import via: System > Certificate Management > SSL Certificate List
+#   - Update 'name' to match your imported certificate name
+#   - Certificate should be signed by a trusted CA
+#
+# =============================================================================
 wildcard_cert:
-  name: "oauth-client-cert"
-  # Set to true if certificate needs to be created (for lab environments)
-  use_self_signed: true
-  # Common name for self-signed cert (used when use_self_signed: true)
-  common_name: "oauth-client.acme.com"
+  name: "oauth-client-cert"       # PROD: Change to your imported cert name
+  use_self_signed: true           # PROD: Set to 'false'
+  common_name: "oauth-client.acme.com"  # Only used for self-signed generation
 
 # =============================================================================
 # AS3 CONFIGURATION
 # =============================================================================
+# PROD: Update virtual_address to your assigned VIP
+#       Update pool_members to your backend servers
 as3_config:
-  virtual_address: "10.1.10.111"
+  virtual_address: "10.1.10.111"  # PROD: Your virtual server IP
   virtual_port: 443
   snat: "auto"
   pool_members:
