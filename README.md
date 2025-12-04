@@ -192,6 +192,49 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution10-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution10/postman/solution10-create.postman_collection.json)
 
+### Solution 11: OAuth Client with OIDC Integration
+- **OAuth 2.0 Client** - BIG-IP APM acts as OAuth Client (RP) for OIDC authentication
+- **OIDC Provider Integration** - Connects to OAuth Authorization Server's OIDC discovery endpoint
+- **Manual Endpoint Configuration** - Supports manual endpoint configuration when OIDC discovery fails
+- **OAuth Client App** - Client registration with auto-generated client ID and secret
+- **OAuth Provider (AAA)** - Configures connection to Authorization Server
+- **OAuth Server (Client Mode)** - AAA server in client mode for token handling
+- **Self-Signed Certificate Option** - Automatic certificate generation for DEMO/LAB environments
+- **Access Policy** - Simple flow: Start → OAuth Client → Allow/Deny
+- **Application Deployment** - AS3-based HTTPS virtual server with backend pool
+
+**Use Case:** Web application that delegates authentication to an OAuth Authorization Server using OIDC. Users accessing the application are redirected to the Authorization Server for login, then returned with tokens after successful authentication. Ideal for SSO integration with OAuth/OIDC providers.
+
+**Prerequisites:**
+- Solution 8 (OAuth AS with HS256) or Solution 10 (OAuth AS with RS256) must be deployed first
+- This client will be automatically registered on the Authorization Server's OAuth profile
+
+**Authentication Flow:**
+1. User accesses OAuth Client application
+2. Redirected to OAuth Authorization Server for login
+3. User authenticates (AD credentials via Solution 8/10)
+4. Authorization Server issues authorization code
+5. OAuth Client exchanges code for tokens
+6. User granted access to protected application
+
+**OIDC Discovery Options:**
+
+| Mode | Configuration | Use Case |
+|------|---------------|----------|
+| Auto Discovery (default off) | `skip_discovery: false` | Production environments where BIG-IP can reach AS |
+| Manual Endpoints (default) | `skip_discovery: true` | LAB environments with network isolation |
+
+> **LAB NOTE:** In many lab environments, the BIG-IP control plane cannot reach virtual server IPs due to network isolation. Set `skip_discovery: true` (default) and configure endpoints manually. The playbook uses the AS virtual server IP address for all endpoints.
+
+**Certificate Options:**
+
+| Mode | Configuration | Use Case |
+|------|---------------|----------|
+| Self-Signed (Default) | `use_self_signed: true` | DEMO/LAB environments |
+| Pre-Imported | `use_self_signed: false` | Production environments |
+
+**Source:** [solution11-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution11/postman/solution11-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow

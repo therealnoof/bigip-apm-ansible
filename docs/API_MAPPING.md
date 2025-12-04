@@ -3075,3 +3075,304 @@ servicePort: 80
 
 ---
 
+## Solution 11: OAuth Client with OIDC Integration
+
+Solution 11 implements an OAuth Client (Relying Party) that authenticates users via an external OAuth Authorization Server using OIDC (OpenID Connect).
+
+### Solution 11 Critical Implementation Details
+
+#### Dependency on OAuth Authorization Server
+
+Solution 11 **requires** Solution 8 or Solution 10 (OAuth Authorization Server) to be deployed first. The OAuth Client will:
+1. Connect to the AS's OIDC discovery endpoint
+2. Register as a client on the AS's OAuth profile
+3. Redirect users to the AS for authentication
+
+#### OIDC Discovery vs Manual Endpoint Configuration
+
+**Problem:** In many lab environments, the BIG-IP control plane cannot reach virtual server IPs due to network isolation. OIDC discovery fails with:
+```
+java.net.SocketTimeoutException: connect timed out
+```
+
+**Solution:** The playbook supports two modes:
+
+| Mode | Configuration | Description |
+|------|---------------|-------------|
+| Manual Endpoints (default) | `skip_discovery: true` | Configure endpoints manually; works in isolated labs |
+| Auto Discovery | `skip_discovery: false` | Use OIDC discovery; requires network connectivity |
+
+**Manual Endpoint Configuration:**
+```yaml
+# vars/solution11.yml
+oauth_as:
+  skip_discovery: true  # Default for lab environments
+  manual_endpoints:
+    authorization_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/authorize"
+    token_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/token"
+    userinfo_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/userinfo"
+    token_validation_scope_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/introspect"
+    jwks_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/jwks"
+```
+
+### OAuth Provider (AAA) Configuration
+
+The OAuth Provider AAA object connects the client to the Authorization Server:
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/aaa/oauth-provider
+Content-Type: application/json
+
+{
+  "name": "oauth-client-provider",
+  "partition": "Common",
+  "allowSelfSignedJwkCert": "yes",
+  "discoveryInterval": 60,
+  "ignoreExpiredCert": "false",
+  "introspect": "supported",
+  "maxJsonNestingLayers": 8,
+  "maxResponseSize": 131072,
+  "openidCfgUri": "https://10.1.10.110/f5-oauth2/v1/.well-known/openid-configuration",
+  "saveJsonPayload": "disabled",
+  "trustedCaBundle": "/Common/ca.acme.com",
+  "type": "f5",
+  "useAutoJwtConfig": "false",
+  "authenticationUri": "https://10.1.10.110/f5-oauth2/v1/authorize",
+  "tokenUri": "https://10.1.10.110/f5-oauth2/v1/token",
+  "tokenValidationScopeUri": "https://10.1.10.110/f5-oauth2/v1/introspect",
+  "userinfoRequestUri": "https://10.1.10.110/f5-oauth2/v1/userinfo",
+  "jwksUri": "https://10.1.10.110/f5-oauth2/v1/jwks"
+}
+```
+
+**Key Parameters:**
+- `useAutoJwtConfig: "false"` - Required when using manual endpoints
+- `useAutoJwtConfig: "true"` - Required when using OIDC discovery
+- `trustedCaBundle` - CA certificate that signed the AS's SSL certificate
+- `allowSelfSignedJwkCert: "yes"` - Allow self-signed JWK certificates (lab only)
+
+### OAuth Client App Registration
+
+The OAuth Client App defines the client application and generates credentials:
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/oauth/oauth-client-app
+Content-Type: application/json
+
+{
+  "name": "oauth-client",
+  "partition": "Common",
+  "appName": "oauth-client",
+  "authType": "secret",
+  "grantCode": "enabled",
+  "grantPassword": "disabled",
+  "grantToken": "disabled",
+  "openidConnect": "enabled",
+  "redirectUris": ["https://oauth-client.acme.com/oauth/client/redirect"],
+  "accessTokenLifetime": 5,
+  "authCodeLifetime": 5,
+  "idTokenLifetime": 5,
+  "refreshTokenLifetime": 480,
+  "generateRefreshToken": "true",
+  "generateJwtRefreshToken": "true",
+  "customizationGroup": "/Common/oauth-client_oauth_authz_client_app_customization"
+}
+```
+
+**Response (includes auto-generated credentials):**
+```json
+{
+  "name": "oauth-client",
+  "clientId": "b99b2f2d3dcbe79f0ac2369f13010617cc0373612fe83069",
+  "clientSecret": "5fa9430c4cbed813b8fc2281c10a17b8d7e895dfbe690617cc0373612fe83069"
+}
+```
+
+### Register Client with Authorization Server
+
+After creating the OAuth Client App, register it with the Authorization Server's OAuth profile:
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/oauth/~Common~as-rsa-oauth/client-apps
+Content-Type: application/json
+
+{
+  "name": "oauth-client",
+  "partition": "solution11"
+}
+```
+
+**Then apply the AS policy:**
+```http
+PATCH https://{{BIGIP_MGMT}}/mgmt/tm/apm/profile/access/~Common~as-rsa-psp
+Content-Type: application/json
+
+{
+  "generationAction": "increment"
+}
+```
+
+### OAuth Server (Client Mode)
+
+The OAuth Server AAA object in client mode handles token exchange:
+
+**Postman:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/aaa/oauth-server
+Content-Type: application/json
+
+{
+  "name": "oauth-client",
+  "partition": "Common",
+  "mode": "client",
+  "clientId": "b99b2f2d3dcbe79f0ac2369f13010617cc0373612fe83069",
+  "clientSecret": "5fa9430c4cbed813b8fc2281c10a17b8d7e895dfbe690617cc0373612fe83069",
+  "clientServersslProfileName": "/Common/serverssl",
+  "dnsResolverName": "/Common/oauth-client-dns",
+  "providerName": "/Common/oauth-client-provider",
+  "tokenValidationInterval": 60
+}
+```
+
+**Key Parameters:**
+- `mode: "client"` - Operates as OAuth Client (not Authorization Server)
+- `clientId` / `clientSecret` - Auto-generated from OAuth Client App
+- `providerName` - References the OAuth Provider AAA object
+- `dnsResolverName` - DNS resolver for endpoint resolution
+
+### Access Policy (Solution 11)
+
+Simple policy flow: Start → OAuth Client → Allow/Deny
+
+**OAuth Client Agent:**
+```http
+POST https://{{BIGIP_MGMT}}/mgmt/tm/apm/policy/agent/aaa-oauth/
+Content-Type: application/json
+X-F5-REST-Coordination-Id: {transaction_id}
+
+{
+  "name": "oauth-client-psp_act_oauth_client_ag",
+  "partition": "Common",
+  "authRedirectRequest": "/Common/F5AuthRedirectRequestJWT",
+  "grantType": "authorization-code",
+  "openidConnect": "enabled",
+  "openidFlowType": "code",
+  "openidHybridResponseType": "code-idtoken",
+  "openidUserinfoRequest": "/Common/F5UserinfoRequest",
+  "redirectionUri": "https://%{session.server.network.name}/oauth/client/redirect",
+  "server": "/Common/oauth-client",
+  "tokenRefreshRequest": "/Common/F5TokenRefreshRequest",
+  "tokenRequest": "/Common/F5TokenJWTRequestByAuthzCode",
+  "tokenValidationMode": "external",
+  "type": "client"
+}
+```
+
+**OAuth Client Policy Item:**
+```yaml
+rules:
+  - caption: "Successful"
+    expression: "expr {[mcget {session.oauth.client.last.authresult}] == 1}"
+    nextItem: "/Common/oauth-client-psp_end_allow"
+  - caption: "fallback"
+    nextItem: "/Common/oauth-client-psp_end_deny"
+```
+
+### Ansible-Specific Implementation Notes
+
+#### Avoiding `.items` Dict Method Collision
+
+When looping over API responses that contain an `items` key, Ansible interprets `.items` as the dictionary method instead of the key. Use bracket notation:
+
+```yaml
+# WRONG - Ansible interprets as dict.items() method
+loop: "{{ existing_clients.json.items | default([]) }}"
+
+# CORRECT - Explicitly access the 'items' key
+- name: Store existing clients list
+  set_fact:
+    existing_clients_list: "{{ existing_clients.json['items'] | default([]) }}"
+
+- name: Extract existing client credentials
+  set_fact:
+    client_id: "{{ item.clientId }}"
+  loop: "{{ existing_clients_list | default([]) }}"
+```
+
+This pattern is used for:
+- OIDC discovery task listings
+- OAuth client app retrieval
+- Any API endpoint returning `{ "items": [...] }`
+
+### Common Errors and Solutions
+
+---
+
+**Error:** `java.net.SocketTimeoutException: connect timed out` during OIDC discovery
+
+**Cause:** BIG-IP control plane cannot reach the OAuth AS virtual server IP.
+
+**Solution:** Set `skip_discovery: true` and configure endpoints manually:
+```yaml
+oauth_as:
+  skip_discovery: true
+  manual_endpoints:
+    authorization_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/authorize"
+    # ... other endpoints
+```
+
+---
+
+**Error:** `'bigip_mgmt' is undefined`
+
+**Cause:** Missing BIG-IP connection variables in vars file.
+
+**Solution:** Add to vars/solution11.yml:
+```yaml
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no
+```
+
+---
+
+**Error:** `Invalid data passed to 'loop', it requires a list, got this instead: <built-in method items of dict object>`
+
+**Cause:** Using `.items` which Ansible interprets as dict method.
+
+**Solution:** Use bracket notation: `json['items']` instead of `json.items`
+
+---
+
+**Error:** `Unable to find /Common/cert-name for certificate`
+
+**Cause:** Wildcard certificate not installed on BIG-IP.
+
+**Solution:** Set `use_self_signed: true` to auto-generate certificate:
+```yaml
+wildcard_cert:
+  name: "oauth-client-cert"
+  use_self_signed: true
+  common_name: "oauth-client.acme.com"
+```
+
+---
+
+### File Location Reference (Solution 11)
+
+| Component | File Path |
+|-----------|-----------|
+| Solution 11 playbook | `deploy_apm_oauth_client.yml` |
+| Solution 11 delete playbook | `delete_apm_oauth_client.yml` |
+| Solution 11 variables | `vars/solution11.yml` |
+| Access policy (Solution 11) | `tasks/access_policy_solution11.yml` |
+| Self-signed cert generation | `tasks/create_self_signed_cert_oauth.yml` |
+| Solution 11 source | [solution11-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution11/postman/solution11-create.postman_collection.json) |
+
+---
+

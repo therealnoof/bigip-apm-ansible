@@ -1,0 +1,255 @@
+---
+# =============================================================================
+# SOLUTION 11: OAuth Client with OIDC Integration
+# =============================================================================
+#
+# BIG-IP Connection Settings
+# =============================================================================
+bigip_mgmt: "{{ ansible_host }}"
+bigip_username: "{{ bigip_user }}"
+bigip_password: "{{ bigip_pass }}"
+bigip_port: 443
+validate_certs: no
+# =============================================================================
+# This solution implements an OAuth Client (Resource Server) that authenticates
+# users via an external OAuth Authorization Server using OIDC.
+#
+# CRITICAL DEPENDENCY:
+# - Solution 8 (OAuth AS with HS256) OR Solution 10 (OAuth AS with RS256)
+#   MUST be deployed FIRST before deploying this solution.
+# - This client will be registered on the Authorization Server's OAuth profile.
+#
+# Policy Flow:
+#   Start → OAuth Client → (Success) → Allow
+#                       ↘ (Failure) → Deny
+# =============================================================================
+
+# =============================================================================
+# NAMING CONFIGURATION
+# =============================================================================
+partition_name: "solution11"
+path_name: "solution11"
+
+# Primary virtual server (this OAuth client)
+vs1_name: "oauth-client"
+dns1_name: "oauth-client.acme.com"
+
+# Reference to the Authorization Server (Solution 8 or 10)
+# These must match the values used in the AS deployment
+# For Solution 8: vs2_name: "as", dns2_name: "as.acme.com", as_access_profile: "as-psp"
+# For Solution 10: vs2_name: "as-rsa", dns2_name: "as-rsa.acme.com", as_access_profile: "as-rsa-psp"
+vs2_name: "as-rsa"                # AS virtual server name from Solution 10
+dns2_name: "as-rsa.acme.com"      # AS DNS name from Solution 10
+as_access_profile: "as-rsa-psp"   # AS access profile name to apply policy changes
+
+# Customization type (modern or standard)
+custom_type: "modern"
+
+# =============================================================================
+# AUTHORIZATION SERVER CONFIGURATION
+# =============================================================================
+# The OAuth Authorization Server this client will connect to
+# Update these values to match your Solution 8 or Solution 10 deployment
+
+# IP address of the Authorization Server (Solution 10 uses 10.1.10.110)
+as_virtual_address: "10.1.10.110"
+
+oauth_as:
+  # OIDC Discovery endpoint (/.well-known/openid-configuration)
+  # NOTE: For lab environments without proper DNS, use IP address instead of DNS name
+  # Production should use: "https://{{ dns2_name }}/f5-oauth2/v1/.well-known/openid-configuration"
+  openid_cfg_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/.well-known/openid-configuration"
+  # Trust bundle for verifying AS SSL certificate
+  trusted_ca_bundle: "/Common/ca.acme.com"
+  # Discovery interval in seconds
+  discovery_interval: 60
+  # Allow self-signed JWK certificates (for lab/testing)
+  allow_self_signed_jwk: "yes"
+
+  # =============================================================================
+  # MANUAL ENDPOINT CONFIGURATION (for lab environments)
+  # =============================================================================
+  # When OIDC discovery cannot reach the Authorization Server (e.g., network
+  # isolation between control plane and data plane), set skip_discovery: true
+  # and provide the endpoints manually below.
+  #
+  # To find these values, query the AS's well-known endpoint from a client that
+  # can reach it, or check the Solution 8/10 deployment logs.
+  # =============================================================================
+  skip_discovery: true  # Set to false to use automatic OIDC discovery
+
+  # Manual endpoints (used when skip_discovery is true)
+  # These match the F5 OAuth AS endpoints from Solution 8/10
+  manual_endpoints:
+    authorization_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/authorize"
+    token_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/token"
+    userinfo_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/userinfo"
+    token_validation_scope_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/introspect"
+    jwks_uri: "https://{{ as_virtual_address }}/f5-oauth2/v1/jwks"
+
+# =============================================================================
+# OAUTH CLIENT CONFIGURATION
+# =============================================================================
+# Configuration for this OAuth client application
+
+oauth_client:
+  name: "{{ vs1_name }}"
+  partition: "Common"
+  # Redirect URI for OAuth callback
+  redirect_uri: "https://{{ dns1_name }}/oauth/client/redirect"
+  # Grant type
+  grant_code: "enabled"
+  grant_password: "disabled"
+  grant_token: "disabled"
+  # OpenID Connect
+  openid_connect: "enabled"
+  # Token lifetimes (in minutes)
+  access_token_lifetime: 5
+  auth_code_lifetime: 5
+  id_token_lifetime: 5
+  jwt_access_token_lifetime: 5
+  jwt_refresh_token_lifetime: 60
+  refresh_token_lifetime: 480
+  refresh_token_usage_limit: 64
+  # Token generation
+  generate_refresh_token: "true"
+  generate_jwt_refresh_token: "true"
+  # Token reuse settings
+  reuse_access_token: "false"
+  reuse_refresh_token: "false"
+  # Use profile settings
+  use_profile_token_mgmt_settings: "true"
+  # Authentication type
+  auth_type: "secret"
+
+# =============================================================================
+# OAUTH SERVER (CLIENT MODE) CONFIGURATION
+# =============================================================================
+# OAuth Server AAA object in client mode
+
+oauth_server:
+  name: "{{ vs1_name }}"
+  partition: "Common"
+  mode: "client"
+  # These will be populated from the OAuth client app creation response
+  # client_id: (auto-generated)
+  # client_secret: (auto-generated)
+  client_serverssl_profile: "/Common/serverssl"
+  token_validation_interval: 60
+
+# =============================================================================
+# DNS RESOLVER CONFIGURATION
+# =============================================================================
+# DNS resolver for OAuth provider endpoint resolution
+
+dns_resolver:
+  name: "{{ vs1_name }}-dns"
+  partition: "Common"
+  forward_zones:
+    - name: "."
+      nameservers:
+        - name: "10.1.20.7:53"
+
+# =============================================================================
+# CA CERTIFICATE CONFIGURATION
+# =============================================================================
+# CA certificate for trusting the OAuth Authorization Server's SSL certificate
+# This should match the CA used by Solution 8 or 10
+
+ca_cert:
+  name: "ca.acme.com"
+  content: |
+    -----BEGIN CERTIFICATE-----
+    MIIDazCCAlOgAwIBAgIQJ4DA+pop3K9HGUl4CIxjbjANBgkqhkiG9w0BAQsFADBI
+    MRUwEwYKCZImiZPyLGQBGRYFbG9jYWwxFTATBgoJkiaJk/IsZAEZFgVmNWxhYjEY
+    MBYGA1UEAxMPZGMxLmY1bGFiLmxvY2FsMB4XDTE5MTEyMDIyMDc0NVoXDTI5MTEy
+    MDIyMTc0NVowSDEVMBMGCgmSJomT8ixkARkWBWxvY2FsMRUwEwYKCZImiZPyLGQB
+    GRYFZjVsYWIxGDAWBgNVBAMTD2RjMS5mNWxhYi5sb2NhbDCCASIwDQYJKoZIhvcN
+    AQEBBQADggEPADCCAQoCggEBANOejxrkrJD12YIeEkZNjRZ9/OZwFeX+QhVi1uHL
+    iILP+4+3ZiZ/dhVGQLncDfHlJm5hSXpzMMDK+LxmjnWfBcx8xurgDyL6E80ZTnIP
+    BbVJ6Au2IWFXM62NK/qsE+5IF0ptAYzDiWjj75njoVQygMNkdWEPxu1N+Ar7WAR4
+    5xghN2wE7d57iCZ53RmrIeGT6equiihns5nUssoOFh/ny9oR6+yudINlozllHhMB
+    GRDCEeGC/0mY/LF50hP6vwEbl1ub0J1SlqlvTn3rrX7dumvtjSKxfQipwbCpG8Qz
+    Gi7ZsSe78Xg7VIGtDVk0Vh4+PbHVJ6GB8pUmFpQ4vVa6sY0CAwEAAaNRME8wCwYD
+    VR0PBAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFNhpUMHsIixtS9g6
+    y/FyNrayg9V6MBAGCSsGAQQBgjcVAQQDAgEAMA0GCSqGSIb3DQEBCwUAA4IBAQCr
+    EjJWFyZR3VFoIvZxUztGiWSjELJGD0vH42hONh6GrzxHadhZcQFmQsi4SmS9TUhP
+    qyj+mUzreWziMcogqTYisSmF6h/cyAujdnLPbR//spGSOvLlV+43P57FmpQ+c+bB
+    V8CJq3e0uvxt2h/9v5Du20fE/Zb6iPESMSjzhEoCPosozELpEqwKTzwGLsyqgLSN
+    WW/+Ov+DGr+cE8pHsXZy8yhkbDY5wrbHMCyrRuXFXwYLpoMcUKMOWUCq+K3TSQ2A
+    mGUtzY3KMfC7YCJj+mrCniWmvncryUpkY3hPplglevWAFQx4hslOU618gt4IpBXy
+    LlIC0DqyAVMHJqF7WozV
+    -----END CERTIFICATE-----
+
+# =============================================================================
+# ACCESS PROFILE CONFIGURATION
+# =============================================================================
+access_profile:
+  name: "{{ vs1_name }}-psp"
+  partition: "Common"
+  type: "all"
+  default_language: "en"
+  accept_languages:
+    - "en"
+  access_policy_timeout: 300
+  inactivity_timeout: 900
+  max_session_timeout: 604800
+  log_settings:
+    - "/Common/default-log-setting"
+
+# =============================================================================
+# CUSTOMIZATION GROUPS
+# =============================================================================
+# These define the look and feel of access policy pages
+customization_groups:
+  - name: "{{ vs1_name }}-psp_logout"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_eps"
+    type: "eps"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_errormap"
+    type: "errormap"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_framework_installation"
+    type: "framework-installation"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_general_ui"
+    type: "general-ui"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}-psp_end_deny_ag"
+    type: "logout"
+    source: "/Common/{{ custom_type }}"
+  - name: "{{ vs1_name }}_oauth_authz_client_app_customization"
+    type: "oauth-authz-client-app"
+    source: "/Common/standard"
+
+# =============================================================================
+# BACKEND SERVER CONFIGURATION
+# =============================================================================
+backend_server:
+  node_address: "10.1.20.6"
+  pool_port: 80
+
+# =============================================================================
+# WILDCARD CERTIFICATE
+# =============================================================================
+# Certificate for HTTPS virtual server
+# Set use_self_signed: true to auto-generate a self-signed certificate for lab
+wildcard_cert:
+  name: "oauth-client-cert"
+  # Set to true if certificate needs to be created (for lab environments)
+  use_self_signed: true
+  # Common name for self-signed cert (used when use_self_signed: true)
+  common_name: "oauth-client.acme.com"
+
+# =============================================================================
+# AS3 CONFIGURATION
+# =============================================================================
+as3_config:
+  virtual_address: "10.1.10.111"
+  virtual_port: 443
+  snat: "auto"
+  pool_members:
+    - address: "10.1.20.6"
+      port: 80

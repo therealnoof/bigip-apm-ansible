@@ -1,0 +1,871 @@
+---
+###############################################################################
+# SOLUTION 11: OAuth Client with OIDC Integration
+###############################################################################
+#
+# This playbook deploys an OAuth Client (Resource Server) that authenticates
+# users via an external OAuth Authorization Server using OIDC.
+#
+# CRITICAL DEPENDENCY:
+#   Solution 8 (OAuth AS with HS256) OR Solution 10 (OAuth AS with RS256)
+#   MUST be deployed FIRST before running this playbook.
+#
+# Policy Flow:
+#   Start → OAuth Client → (Success) → Allow
+#                       ↘ (Failure) → Deny
+#
+# Usage:
+#   ansible-playbook deploy_apm_oauth_client.yml
+#
+# Prerequisites:
+#   - BIG-IP with APM licensed
+#   - Solution 8 or Solution 10 deployed
+#   - Wildcard certificate imported (or use existing)
+#   - CA certificate for trusting OAuth AS
+#
+###############################################################################
+
+- name: Deploy Solution 11 - OAuth Client with OIDC Integration
+  hosts: bigip
+  connection: local
+  gather_facts: no
+
+  vars_files:
+    - vars/solution11.yml
+
+  tasks:
+    # =========================================================================
+    # PRE-FLIGHT CHECKS
+    # =========================================================================
+
+    - name: Display deployment information
+      debug:
+        msg:
+          - "============================================================"
+          - "Solution 11: OAuth Client with OIDC Integration"
+          - "============================================================"
+          - "Virtual Server: {{ vs1_name }}"
+          - "DNS Name: {{ dns1_name }}"
+          - "OAuth AS DNS: {{ dns2_name }}"
+          - "OIDC Discovery: {{ oauth_as.openid_cfg_uri }}"
+          - "============================================================"
+          - "DEPENDENCY: Requires Solution 8 or 10 (OAuth AS)"
+          - "============================================================"
+      tags:
+        - always
+
+    # =========================================================================
+    # CREATE BACKEND NODE
+    # =========================================================================
+
+    - name: Create backend server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ backend_server.node_address }}"
+          address: "{{ backend_server.node_address }}"
+        status_code: [200, 409]
+      register: node_result
+      tags:
+        - ltm
+        - node
+
+    - name: Display node creation result
+      debug:
+        msg: "Node {{ backend_server.node_address }}: {{ 'created' if node_result.status == 200 else 'already exists' }}"
+      tags:
+        - ltm
+        - node
+
+    # =========================================================================
+    # CREATE DNS RESOLVER
+    # =========================================================================
+
+    - name: Create DNS resolver
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/net/dns-resolver"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ dns_resolver.name }}"
+          forwardZones: "{{ dns_resolver.forward_zones }}"
+        status_code: [200, 409]
+      register: dns_resolver_result
+      tags:
+        - ltm
+        - dns
+
+    - name: Display DNS resolver result
+      debug:
+        msg: "DNS Resolver {{ dns_resolver.name }}: {{ 'created' if dns_resolver_result.status == 200 else 'already exists' }}"
+      tags:
+        - ltm
+        - dns
+
+    # =========================================================================
+    # UPLOAD AND INSTALL CA CERTIFICATE
+    # =========================================================================
+
+    - name: Check if CA certificate exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ ca_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: ca_cert_check
+      tags:
+        - certificate
+
+    - name: Upload CA certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ ca_cert.name }}.crt"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        headers:
+          Content-Type: "application/octet-stream"
+          Content-Range: "0-{{ ca_cert.content | length - 1 }}/{{ ca_cert.content | length }}"
+        body: "{{ ca_cert.content }}"
+        status_code: [200, 201]
+      when: ca_cert_check.status == 404
+      tags:
+        - certificate
+
+    - name: Install CA certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          command: "install"
+          name: "{{ ca_cert.name }}"
+          from-local-file: "/var/config/rest/downloads/{{ ca_cert.name }}.crt"
+        status_code: [200, 409]
+      when: ca_cert_check.status == 404
+      tags:
+        - certificate
+
+    - name: Display CA certificate status
+      debug:
+        msg: "CA Certificate {{ ca_cert.name }}: {{ 'already exists' if ca_cert_check.status == 200 else 'installed' }}"
+      tags:
+        - certificate
+
+    # =========================================================================
+    # CREATE SELF-SIGNED CERTIFICATE (if needed)
+    # =========================================================================
+
+    - name: Check if wildcard certificate exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ wildcard_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: wildcard_cert_check
+      tags:
+        - certificate
+
+    - name: Create self-signed certificate
+      include_tasks: tasks/create_self_signed_cert_oauth.yml
+      when:
+        - wildcard_cert.use_self_signed | default(false) | bool
+        - wildcard_cert_check.status == 404
+      tags:
+        - certificate
+
+    - name: Display wildcard certificate status
+      debug:
+        msg: "Wildcard Certificate {{ wildcard_cert.name }}: {{ 'already exists' if wildcard_cert_check.status == 200 else ('self-signed created' if wildcard_cert.use_self_signed else 'MISSING - deployment will fail') }}"
+      tags:
+        - certificate
+
+    # =========================================================================
+    # CREATE OAUTH PROVIDER (AAA) - WITH MANUAL ENDPOINTS OR DISCOVERY
+    # =========================================================================
+
+    # Build OAuth provider body based on skip_discovery setting
+    - name: Build OAuth provider body (with manual endpoints)
+      set_fact:
+        oauth_provider_body:
+          name: "{{ vs1_name }}-provider"
+          partition: "Common"
+          allowSelfSignedJwkCert: "{{ oauth_as.allow_self_signed_jwk }}"
+          discoveryInterval: "{{ oauth_as.discovery_interval }}"
+          ignoreExpiredCert: "false"
+          introspect: "supported"
+          maxJsonNestingLayers: 8
+          maxResponseSize: 131072
+          openidCfgUri: "{{ oauth_as.openid_cfg_uri }}"
+          saveJsonPayload: "disabled"
+          trustedCaBundle: "{{ oauth_as.trusted_ca_bundle }}"
+          type: "f5"
+          useAutoJwtConfig: "false"
+          authenticationUri: "{{ oauth_as.manual_endpoints.authorization_uri }}"
+          tokenUri: "{{ oauth_as.manual_endpoints.token_uri }}"
+          tokenValidationScopeUri: "{{ oauth_as.manual_endpoints.token_validation_scope_uri }}"
+          userinfoRequestUri: "{{ oauth_as.manual_endpoints.userinfo_uri }}"
+          jwksUri: "{{ oauth_as.manual_endpoints.jwks_uri }}"
+      when: oauth_as.skip_discovery | default(false) | bool
+      tags:
+        - oauth
+        - provider
+
+    - name: Build OAuth provider body (with OIDC discovery)
+      set_fact:
+        oauth_provider_body:
+          name: "{{ vs1_name }}-provider"
+          partition: "Common"
+          allowSelfSignedJwkCert: "{{ oauth_as.allow_self_signed_jwk }}"
+          discoveryInterval: "{{ oauth_as.discovery_interval }}"
+          ignoreExpiredCert: "false"
+          introspect: "supported"
+          maxJsonNestingLayers: 8
+          maxResponseSize: 131072
+          openidCfgUri: "{{ oauth_as.openid_cfg_uri }}"
+          saveJsonPayload: "disabled"
+          trustedCaBundle: "{{ oauth_as.trusted_ca_bundle }}"
+          type: "f5"
+          useAutoJwtConfig: "true"
+      when: not (oauth_as.skip_discovery | default(false) | bool)
+      tags:
+        - oauth
+        - provider
+
+    - name: Create OAuth provider (AAA)
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body: "{{ oauth_provider_body }}"
+        status_code: [200, 409]
+      register: provider_result
+      tags:
+        - oauth
+        - provider
+
+    - name: Update existing OAuth provider with manual endpoints
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider/~Common~{{ vs1_name }}-provider"
+        method: PATCH
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          useAutoJwtConfig: "false"
+          authenticationUri: "{{ oauth_as.manual_endpoints.authorization_uri }}"
+          tokenUri: "{{ oauth_as.manual_endpoints.token_uri }}"
+          tokenValidationScopeUri: "{{ oauth_as.manual_endpoints.token_validation_scope_uri }}"
+          userinfoRequestUri: "{{ oauth_as.manual_endpoints.userinfo_uri }}"
+          jwksUri: "{{ oauth_as.manual_endpoints.jwks_uri }}"
+        status_code: [200]
+      when:
+        - provider_result.status == 409
+        - oauth_as.skip_discovery | default(false) | bool
+      tags:
+        - oauth
+        - provider
+
+    - name: Display OAuth provider result
+      debug:
+        msg: "OAuth Provider {{ vs1_name }}-provider: {{ 'created' if provider_result.status == 200 else 'updated/exists' }} (skip_discovery={{ oauth_as.skip_discovery | default(false) }})"
+      tags:
+        - oauth
+        - provider
+
+    # =========================================================================
+    # OIDC DISCOVERY (only when not skipping)
+    # =========================================================================
+
+    - name: Check for existing OIDC discovery task
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/access/oidc/discover"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+      register: discover_check
+      when: not (oauth_as.skip_discovery | default(false) | bool)
+      tags:
+        - oauth
+        - discovery
+
+    - name: Store discovery items list
+      set_fact:
+        discover_items: "{{ discover_check.json['items'] | default([]) }}"
+      when: not (oauth_as.skip_discovery | default(false) | bool)
+      tags:
+        - oauth
+        - discovery
+
+    - name: Find existing discovery task ID
+      set_fact:
+        existing_discover_id: "{{ item.id }}"
+      loop: "{{ discover_items | default([]) }}"
+      when:
+        - not (oauth_as.skip_discovery | default(false) | bool)
+        - item.providerName == '/Common/' + vs1_name + '-provider'
+      tags:
+        - oauth
+        - discovery
+
+    - name: Cancel existing discovery task
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/access/oidc/discover/{{ existing_discover_id }}"
+        method: PATCH
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          status: "CANCEL_REQUESTED"
+        status_code: [200, 400, 404]
+      when:
+        - not (oauth_as.skip_discovery | default(false) | bool)
+        - existing_discover_id is defined
+      ignore_errors: yes
+      tags:
+        - oauth
+        - discovery
+
+    - name: Delete existing discovery task
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/access/oidc/discover/{{ existing_discover_id }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      when:
+        - not (oauth_as.skip_discovery | default(false) | bool)
+        - existing_discover_id is defined
+      ignore_errors: yes
+      tags:
+        - oauth
+        - discovery
+
+    - name: Start OIDC discovery
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/access/oidc/discover"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          providerName: "{{ vs1_name }}-provider"
+        status_code: [200, 202, 400]
+      register: discover_result
+      when: not (oauth_as.skip_discovery | default(false) | bool)
+      tags:
+        - oauth
+        - discovery
+
+    - name: Wait for OIDC discovery to complete
+      pause:
+        seconds: 5
+      when: not (oauth_as.skip_discovery | default(false) | bool)
+      tags:
+        - oauth
+        - discovery
+
+    - name: Retrieve OAuth provider endpoints
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider/~Common~{{ vs1_name }}-provider"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+      register: provider_endpoints
+      tags:
+        - oauth
+        - discovery
+
+    - name: Verify OIDC discovery was successful
+      fail:
+        msg: |
+          ERROR: OIDC Discovery failed. The OAuth Authorization Server may not be available.
+
+          Ensure that Solution 8 (OAuth AS) or Solution 10 (OAuth AS with RS256) is deployed
+          and accessible at: {{ oauth_as.openid_cfg_uri }}
+
+          The Authorization Server's /.well-known/openid-configuration endpoint must be reachable.
+
+          TIP: If the BIG-IP control plane cannot reach the AS virtual server, set
+          'oauth_as.skip_discovery: true' in vars/solution11.yml and configure
+          endpoints manually.
+      when:
+        - not (oauth_as.skip_discovery | default(false) | bool)
+        - provider_endpoints.json.authenticationUri is defined
+        - "'f5-oauth.local' in provider_endpoints.json.authenticationUri"
+      tags:
+        - oauth
+        - discovery
+
+    - name: Display configured endpoints
+      debug:
+        msg:
+          - "OAuth Provider endpoints configured!"
+          - "Mode: {{ 'Manual' if (oauth_as.skip_discovery | default(false) | bool) else 'OIDC Discovery' }}"
+          - "Authorization URI: {{ provider_endpoints.json.authenticationUri | default('N/A') }}"
+          - "Token URI: {{ provider_endpoints.json.tokenUri | default('N/A') }}"
+      tags:
+        - oauth
+        - discovery
+
+    # =========================================================================
+    # CREATE OAUTH CLIENT APP CUSTOMIZATION GROUP
+    # =========================================================================
+
+    - name: Create OAuth client app customization group
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}_oauth_authz_client_app_customization"
+          partition: "Common"
+          source: "/Common/standard"
+          type: "oauth-authz-client-app"
+        status_code: [200, 409]
+      register: client_custom_result
+      tags:
+        - oauth
+        - client
+
+    # =========================================================================
+    # CREATE OAUTH CLIENT APP
+    # =========================================================================
+
+    - name: Create OAuth client app
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/oauth-client-app"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ oauth_client.name }}"
+          partition: "{{ oauth_client.partition }}"
+          accessTokenLifetime: "{{ oauth_client.access_token_lifetime }}"
+          appName: "{{ oauth_client.name }}"
+          authCodeLifetime: "{{ oauth_client.auth_code_lifetime }}"
+          authType: "{{ oauth_client.auth_type }}"
+          customizationGroup: "/Common/{{ vs1_name }}_oauth_authz_client_app_customization"
+          generateJwtRefreshToken: "{{ oauth_client.generate_jwt_refresh_token }}"
+          generateRefreshToken: "{{ oauth_client.generate_refresh_token }}"
+          grantCode: "{{ oauth_client.grant_code }}"
+          grantPassword: "{{ oauth_client.grant_password }}"
+          grantToken: "{{ oauth_client.grant_token }}"
+          idTokenLifetime: "{{ oauth_client.id_token_lifetime }}"
+          jwtAccessTokenLifetime: "{{ oauth_client.jwt_access_token_lifetime }}"
+          jwtRefreshTokenLifetime: "{{ oauth_client.jwt_refresh_token_lifetime }}"
+          openidConnect: "{{ oauth_client.openid_connect }}"
+          redirectUris:
+            - "{{ oauth_client.redirect_uri }}"
+          refreshTokenLifetime: "{{ oauth_client.refresh_token_lifetime }}"
+          refreshTokenUsageLimit: "{{ oauth_client.refresh_token_usage_limit }}"
+          reuseAccessToken: "{{ oauth_client.reuse_access_token }}"
+          reuseRefreshToken: "{{ oauth_client.reuse_refresh_token }}"
+          useProfileTokenMgmtSettings: "{{ oauth_client.use_profile_token_mgmt_settings }}"
+        status_code: [200, 409]
+      register: client_app_result
+      tags:
+        - oauth
+        - client
+
+    - name: Store client credentials (new client)
+      set_fact:
+        client_id: "{{ client_app_result.json.clientId }}"
+        client_secret: "{{ client_app_result.json.clientSecret }}"
+      when: client_app_result.status == 200
+      tags:
+        - oauth
+        - client
+
+    - name: Retrieve existing OAuth client app
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/oauth-client-app"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+      register: existing_clients
+      when: client_app_result.status == 409
+      tags:
+        - oauth
+        - client
+
+    - name: Store existing clients list
+      set_fact:
+        existing_clients_list: "{{ existing_clients.json['items'] | default([]) }}"
+      when: client_app_result.status == 409
+      tags:
+        - oauth
+        - client
+
+    - name: Extract existing client credentials
+      set_fact:
+        client_id: "{{ item.clientId }}"
+        client_secret: "{{ item.clientSecret }}"
+      loop: "{{ existing_clients_list | default([]) }}"
+      when:
+        - client_app_result.status == 409
+        - item.name == oauth_client.name
+      tags:
+        - oauth
+        - client
+
+    - name: Display client credentials
+      debug:
+        msg:
+          - "OAuth Client App: {{ oauth_client.name }}"
+          - "Client ID: {{ client_id }}"
+          - "Client Secret: {{ client_secret }}"
+      tags:
+        - oauth
+        - client
+
+    # =========================================================================
+    # REGISTER CLIENT WITH AUTHORIZATION SERVER
+    # =========================================================================
+
+    - name: Add OAuth client to Authorization Server's client list
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/oauth/~Common~{{ vs2_name }}-oauth/client-apps"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ vs1_name }}"
+          partition: "{{ partition_name }}"
+        status_code: [200, 409]
+      register: as_client_result
+      tags:
+        - oauth
+        - as_registration
+
+    - name: Verify client registration with AS
+      fail:
+        msg: |
+          ERROR: Unable to register OAuth client with Authorization Server.
+
+          Ensure that Solution 8 or Solution 10 is deployed and the OAuth profile
+          '{{ vs2_name }}-oauth' exists on the BIG-IP.
+
+          You may need to deploy the Authorization Server solution first.
+      when: as_client_result.status not in [200, 409]
+      tags:
+        - oauth
+        - as_registration
+
+    - name: Display AS registration result
+      debug:
+        msg: "OAuth Client registered with AS: {{ 'added' if as_client_result.status == 200 else 'already registered' }}"
+      tags:
+        - oauth
+        - as_registration
+
+    # =========================================================================
+    # APPLY POLICY ON AUTHORIZATION SERVER
+    # =========================================================================
+
+    - name: Apply policy on Authorization Server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ as_access_profile }}"
+        method: PATCH
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          generationAction: "increment"
+        status_code: [200]
+      register: as_apply_result
+      tags:
+        - oauth
+        - as_registration
+
+    - name: Display AS policy apply result
+      debug:
+        msg: "Authorization Server policy applied: {{ as_access_profile }}"
+      tags:
+        - oauth
+        - as_registration
+
+    # =========================================================================
+    # CREATE OAUTH SERVER (CLIENT MODE)
+    # =========================================================================
+
+    - name: Create OAuth server (client mode)
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-server"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ oauth_server.name }}"
+          partition: "{{ oauth_server.partition }}"
+          clientId: "{{ client_id }}"
+          clientSecret: "{{ client_secret }}"
+          clientServersslProfileName: "{{ oauth_server.client_serverssl_profile }}"
+          dnsResolverName: "/Common/{{ dns_resolver.name }}"
+          mode: "{{ oauth_server.mode }}"
+          providerName: "/Common/{{ vs1_name }}-provider"
+          tokenValidationInterval: "{{ oauth_server.token_validation_interval }}"
+        status_code: [200, 409]
+      register: oauth_server_result
+      tags:
+        - oauth
+        - server
+
+    - name: Display OAuth server result
+      debug:
+        msg: "OAuth Server {{ oauth_server.name }}: {{ 'created' if oauth_server_result.status == 200 else 'already exists' }}"
+      tags:
+        - oauth
+        - server
+
+    # =========================================================================
+    # CREATE ACCESS POLICY
+    # =========================================================================
+
+    - name: Create access policy
+      include_tasks: tasks/access_policy_solution11.yml
+      tags:
+        - policy
+
+    # =========================================================================
+    # DEPLOY AS3 APPLICATION
+    # =========================================================================
+
+    # Build TLS certificate config
+    - name: Build TLS server certificate config
+      set_fact:
+        tls_cert_config:
+          class: "Certificate"
+          certificate:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+          privateKey:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+      tags:
+        - application
+        - as3
+
+    # Build TLS server profile config
+    - name: Build TLS server profile config
+      set_fact:
+        tls_server_config:
+          class: "TLS_Server"
+          certificates:
+            - certificate: "tlsserver_local_cert"
+      tags:
+        - application
+        - as3
+
+    # Build virtual server config
+    - name: Build virtual server config
+      set_fact:
+        vs_config:
+          class: "Service_HTTPS"
+          virtualAddresses:
+            - "{{ as3_config.virtual_address }}"
+          virtualPort: 443
+          serverTLS: "{{ vs1_name }}-clientssl"
+          pool: "iis-pool"
+          snat: "{{ as3_config.snat }}"
+          profileAccess:
+            bigip: "/Common/{{ vs1_name }}-psp"
+      tags:
+        - application
+        - as3
+
+    # Build pool config
+    - name: Build pool config
+      set_fact:
+        pool_config:
+          class: "Pool"
+          monitors:
+            - tcp
+          members:
+            - servicePort: 80
+              serverAddresses:
+                - "{{ as3_config.pool_members[0].address }}"
+      tags:
+        - application
+        - as3
+
+    # Build application config
+    - name: Build application config
+      set_fact:
+        app_config:
+          class: "Application"
+          template: "generic"
+      tags:
+        - application
+        - as3
+
+    - name: Add virtual server to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name: vs_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add TLS server profile to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name + '-clientssl': tls_server_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add certificate to application
+      set_fact:
+        app_config: "{{ app_config | combine({'tlsserver_local_cert': tls_cert_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add pool to application
+      set_fact:
+        app_config: "{{ app_config | combine({'iis-pool': pool_config}) }}"
+      tags:
+        - application
+        - as3
+
+    # Build tenant config
+    - name: Build tenant config
+      set_fact:
+        tenant_config:
+          class: "Tenant"
+      tags:
+        - application
+        - as3
+
+    - name: Add application to tenant
+      set_fact:
+        tenant_config: "{{ tenant_config | combine({vs1_name: app_config}) }}"
+      tags:
+        - application
+        - as3
+
+    # Build AS3 declaration
+    - name: Build AS3 declaration
+      set_fact:
+        as3_declaration:
+          class: "ADC"
+          schemaVersion: "3.14.0"
+          id: "APM"
+      tags:
+        - application
+        - as3
+
+    - name: Add tenant to declaration
+      set_fact:
+        as3_declaration: "{{ as3_declaration | combine({partition_name: tenant_config}) }}"
+      tags:
+        - application
+        - as3
+
+    # Wrap in AS3 action
+    - name: Wrap declaration in AS3 action
+      set_fact:
+        as3_body:
+          class: "AS3"
+          action: "deploy"
+          persist: true
+          declaration: "{{ as3_declaration }}"
+      tags:
+        - application
+        - as3
+
+    - name: Deploy AS3 application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body: "{{ as3_body }}"
+        status_code: [200, 202]
+        timeout: 120
+      register: as3_result
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deployment result
+      debug:
+        msg: "AS3 application deployed: {{ as3_result.json.results[0].message | default('Success') }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DEPLOYMENT SUMMARY
+    # =========================================================================
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================================
+          Solution 11: OAuth Client - Deployment Complete
+          ============================================================
+
+          Virtual Server: https://{{ as3_config.virtual_address }}:443
+          DNS Name: {{ dns1_name }}
+
+          OAuth Configuration:
+          - Client ID: {{ client_id }}
+          - Client Secret: {{ client_secret }}
+          - Redirect URI: {{ oauth_client.redirect_uri }}
+
+          OAuth Authorization Server:
+          - Provider: {{ vs2_name }}-provider
+          - OIDC Discovery: {{ oauth_as.openid_cfg_uri }}
+
+          Policy Flow:
+          Start → OAuth Client → (Success) → Allow
+                              ↘ (Failure) → Deny
+
+          ============================================================
+
+          When users access this application, they will be redirected
+          to the OAuth Authorization Server for authentication. After
+          successful authentication, they will be redirected back with
+          an authorization code that is exchanged for tokens.
+
+          ============================================================
+      tags:
+        - always

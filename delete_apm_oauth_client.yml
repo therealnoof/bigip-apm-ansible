@@ -1,0 +1,369 @@
+---
+###############################################################################
+# SOLUTION 11: Delete OAuth Client with OIDC Integration
+###############################################################################
+#
+# This playbook removes all components created by Solution 11.
+#
+# Usage:
+#   ansible-playbook delete_apm_oauth_client.yml -e confirm_delete=true
+#
+# NOTE: This does NOT remove the OAuth client registration from the
+#       Authorization Server (Solution 8/10). That should be cleaned up
+#       separately if needed.
+#
+###############################################################################
+
+- name: Delete Solution 11 - OAuth Client with OIDC Integration
+  hosts: bigip
+  connection: local
+  gather_facts: no
+
+  vars_files:
+    - vars/solution11.yml
+
+  vars:
+    confirm_delete: false
+
+  tasks:
+    # =========================================================================
+    # CONFIRMATION CHECK
+    # =========================================================================
+
+    - name: Require confirmation for delete
+      fail:
+        msg: |
+          This playbook will DELETE all Solution 11 components.
+
+          To confirm deletion, run with:
+            ansible-playbook delete_apm_oauth_client.yml -e confirm_delete=true
+      when: not confirm_delete | bool
+      tags:
+        - always
+
+    - name: Display deletion warning
+      debug:
+        msg:
+          - "============================================================"
+          - "WARNING: Deleting Solution 11 - OAuth Client"
+          - "============================================================"
+          - "The following will be DELETED:"
+          - "  - AS3 tenant: {{ partition_name }}"
+          - "  - Access profile: {{ vs1_name }}-psp"
+          - "  - Access policy and all policy items"
+          - "  - OAuth Server: {{ oauth_server.name }}"
+          - "  - OAuth Client App: {{ oauth_client.name }}"
+          - "  - OAuth Provider: {{ vs1_name }}-provider"
+          - "  - DNS Resolver: {{ dns_resolver.name }}"
+          - "  - Customization groups"
+          - "============================================================"
+          - "NOT deleted (may be shared):"
+          - "  - Backend node: {{ backend_server.node_address }}"
+          - "  - CA Certificate: {{ ca_cert.name }}"
+          - "  - Wildcard Certificate: {{ wildcard_cert.name }}"
+          - "  - OAuth client registration on AS (Solution 8/10)"
+          - "============================================================"
+      tags:
+        - always
+
+    # =========================================================================
+    # DELETE AS3 APPLICATION
+    # =========================================================================
+
+    - name: Delete AS3 tenant
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404]
+        timeout: 120
+      register: as3_delete_result
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 tenant {{ partition_name }}: {{ 'deleted' if as3_delete_result.status in [200, 204] else 'not found' }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DELETE ACCESS PROFILE
+    # =========================================================================
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: profile_delete
+      tags:
+        - policy
+
+    - name: Display profile deletion result
+      debug:
+        msg: "Access profile {{ vs1_name }}-psp: {{ 'deleted' if profile_delete.status == 200 else 'not found' }}"
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE ACCESS POLICY
+    # =========================================================================
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: policy_delete
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE POLICY ITEMS
+    # =========================================================================
+
+    - name: Delete policy items
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_ent"
+        - "{{ vs1_name }}-psp_act_oauth_client"
+        - "{{ vs1_name }}-psp_end_allow"
+        - "{{ vs1_name }}-psp_end_deny"
+      ignore_errors: yes
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE POLICY AGENTS
+    # =========================================================================
+
+    - name: Delete OAuth client agent
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-oauth/~Common~{{ vs1_name }}-psp_act_oauth_client_ag"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      ignore_errors: yes
+      tags:
+        - policy
+
+    - name: Delete ending agents
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/{{ item.type }}/~Common~{{ item.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - { name: "{{ vs1_name }}-psp_end_allow_ag", type: "ending-allow" }
+        - { name: "{{ vs1_name }}-psp_end_deny_ag", type: "ending-deny" }
+      ignore_errors: yes
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE CUSTOMIZATION GROUPS
+    # =========================================================================
+
+    - name: Delete customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_logout"
+        - "{{ vs1_name }}-psp_eps"
+        - "{{ vs1_name }}-psp_errormap"
+        - "{{ vs1_name }}-psp_framework_installation"
+        - "{{ vs1_name }}-psp_general_ui"
+        - "{{ vs1_name }}-psp_end_deny_ag"
+        - "{{ vs1_name }}_oauth_authz_client_app_customization"
+      ignore_errors: yes
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE OAUTH SERVER
+    # =========================================================================
+
+    - name: Delete OAuth server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-server/~Common~{{ oauth_server.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: oauth_server_delete
+      tags:
+        - oauth
+
+    - name: Display OAuth server deletion result
+      debug:
+        msg: "OAuth Server {{ oauth_server.name }}: {{ 'deleted' if oauth_server_delete.status == 200 else 'not found' }}"
+      tags:
+        - oauth
+
+    # =========================================================================
+    # DELETE OAUTH CLIENT APP
+    # =========================================================================
+
+    - name: Delete OAuth client app
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/oauth-client-app/~Common~{{ oauth_client.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: client_app_delete
+      tags:
+        - oauth
+
+    - name: Display OAuth client app deletion result
+      debug:
+        msg: "OAuth Client App {{ oauth_client.name }}: {{ 'deleted' if client_app_delete.status == 200 else 'not found' }}"
+      tags:
+        - oauth
+
+    # =========================================================================
+    # DELETE OIDC DISCOVERY TASK
+    # =========================================================================
+
+    - name: Get OIDC discovery tasks
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/access/oidc/discover"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+      register: discover_tasks
+      ignore_errors: yes
+      tags:
+        - oauth
+
+    - name: Find discovery task ID
+      set_fact:
+        discover_task_id: "{{ item.id }}"
+      loop: "{{ discover_tasks.json.items | default([]) }}"
+      when: item.providerName == '/Common/' + vs1_name + '-provider'
+      ignore_errors: yes
+      tags:
+        - oauth
+
+    - name: Delete OIDC discovery task
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/access/oidc/discover/{{ discover_task_id }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      when: discover_task_id is defined
+      ignore_errors: yes
+      tags:
+        - oauth
+
+    # =========================================================================
+    # DELETE OAUTH PROVIDER
+    # =========================================================================
+
+    - name: Delete OAuth provider
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/oauth-provider/~Common~{{ vs1_name }}-provider"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: provider_delete
+      tags:
+        - oauth
+
+    - name: Display OAuth provider deletion result
+      debug:
+        msg: "OAuth Provider {{ vs1_name }}-provider: {{ 'deleted' if provider_delete.status == 200 else 'not found' }}"
+      tags:
+        - oauth
+
+    # =========================================================================
+    # DELETE DNS RESOLVER
+    # =========================================================================
+
+    - name: Delete DNS resolver
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/net/dns-resolver/~Common~{{ dns_resolver.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: dns_delete
+      tags:
+        - ltm
+
+    - name: Display DNS resolver deletion result
+      debug:
+        msg: "DNS Resolver {{ dns_resolver.name }}: {{ 'deleted' if dns_delete.status == 200 else 'not found' }}"
+      tags:
+        - ltm
+
+    # =========================================================================
+    # DELETION SUMMARY
+    # =========================================================================
+
+    - name: Display deletion summary
+      debug:
+        msg: |
+          ============================================================
+          Solution 11: OAuth Client - Deletion Complete
+          ============================================================
+
+          Deleted:
+          - AS3 tenant: {{ partition_name }}
+          - Access profile and policy
+          - OAuth Server: {{ oauth_server.name }}
+          - OAuth Client App: {{ oauth_client.name }}
+          - OAuth Provider: {{ vs1_name }}-provider
+          - DNS Resolver: {{ dns_resolver.name }}
+          - All customization groups
+
+          NOT deleted (manual cleanup if needed):
+          - Backend node: {{ backend_server.node_address }}
+          - CA Certificate: {{ ca_cert.name }}
+          - Wildcard Certificate: {{ wildcard_cert.name }}
+          - OAuth client registration on Authorization Server
+
+          ============================================================
+
+          NOTE: If you want to remove the client registration from the
+          Authorization Server (Solution 8/10), you will need to do so
+          manually or redeploy the AS solution.
+
+          ============================================================
+      tags:
+        - always

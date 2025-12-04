@@ -1,0 +1,401 @@
+---
+###############################################
+# Solution 11: OAuth Client Access Policy
+# Policy Flow: Start → OAuth Client → Allow/Deny
+###############################################
+
+# =========================================================================
+# CREATE TRANSACTION
+# =========================================================================
+
+- name: Create transaction for policy creation
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body: {}
+    status_code: [200]
+  register: transaction_result
+  tags:
+    - policy
+
+- name: Store transaction ID
+  set_fact:
+    trans_id: "{{ transaction_result.json.transId }}"
+  tags:
+    - policy
+
+- name: Display transaction ID
+  debug:
+    msg: "Transaction ID: {{ trans_id }}"
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE CUSTOMIZATION GROUPS (within transaction)
+# =========================================================================
+
+- name: Create baseline customization groups
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      partition: "Common"
+      source: "{{ item.source }}"
+      type: "{{ item.type }}"
+    status_code: [200, 409]
+  loop:
+    - { name: "{{ vs1_name }}-psp_logout", type: "logout", source: "/Common/{{ custom_type }}" }
+    - { name: "{{ vs1_name }}-psp_eps", type: "eps", source: "/Common/{{ custom_type }}" }
+    - { name: "{{ vs1_name }}-psp_errormap", type: "errormap", source: "/Common/{{ custom_type }}" }
+    - { name: "{{ vs1_name }}-psp_framework_installation", type: "framework-installation", source: "/Common/{{ custom_type }}" }
+    - { name: "{{ vs1_name }}-psp_general_ui", type: "general-ui", source: "/Common/{{ custom_type }}" }
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE DENY ENDING
+# =========================================================================
+
+- name: Create deny ending customization group
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny_ag"
+      partition: "Common"
+      source: "/Common/{{ custom_type }}"
+      type: "logout"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+- name: Create deny ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-deny/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny_ag"
+      partition: "Common"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_end_deny_ag"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+- name: Create deny ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_deny"
+      partition: "Common"
+      caption: "Deny"
+      color: 2
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-psp_end_deny_ag"
+          partition: "Common"
+          type: "ending-deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE ALLOW ENDING
+# =========================================================================
+
+- name: Create allow ending agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/ending-allow/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_allow_ag"
+      partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+- name: Create allow ending policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_end_allow"
+      partition: "Common"
+      caption: "Allow"
+      color: 1
+      itemType: "ending"
+      agents:
+        - name: "{{ vs1_name }}-psp_end_allow_ag"
+          partition: "Common"
+          type: "ending-allow"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE OAUTH CLIENT AGENT
+# =========================================================================
+
+- name: Create OAuth client agent
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/agent/aaa-oauth/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_oauth_client_ag"
+      partition: "Common"
+      authRedirectRequest: "/Common/F5AuthRedirectRequestJWT"
+      grantType: "authorization-code"
+      openidConnect: "enabled"
+      openidFlowType: "code"
+      openidHybridResponseType: "code-idtoken"
+      openidUserinfoRequest: "/Common/F5UserinfoRequest"
+      redirectionUri: "https://%{session.server.network.name}/oauth/client/redirect"
+      server: "/Common/{{ vs1_name }}"
+      tokenRefreshRequest: "/Common/F5TokenRefreshRequest"
+      tokenRequest: "/Common/F5TokenJWTRequestByAuthzCode"
+      tokenValidationMode: "external"
+      type: "client"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+- name: Create OAuth client policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_act_oauth_client"
+      partition: "Common"
+      caption: "OAuth Client"
+      color: 1
+      itemType: "action"
+      loop: "false"
+      agents:
+        - name: "{{ vs1_name }}-psp_act_oauth_client_ag"
+          partition: "Common"
+          type: "aaa-oauth"
+      rules:
+        - caption: "Successful"
+          expression: "expr {[mcget {session.oauth.client.last.authresult}] == 1}"
+          nextItem: "/Common/{{ vs1_name }}-psp_end_allow"
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_end_deny"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE START ITEM
+# =========================================================================
+
+- name: Create start policy item
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/policy-item/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp_ent"
+      partition: "Common"
+      caption: "Start"
+      color: 1
+      itemType: "entry"
+      loop: "false"
+      rules:
+        - caption: "fallback"
+          nextItem: "/Common/{{ vs1_name }}-psp_act_oauth_client"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE ACCESS POLICY
+# =========================================================================
+
+- name: Create access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp"
+      partition: "Common"
+      defaultEnding: "{{ vs1_name }}-psp_end_deny"
+      maxMacroLoopCount: 1
+      oneshotMacro: "false"
+      startItem: "{{ vs1_name }}-psp_ent"
+      type: "access-policy"
+      items:
+        - name: "{{ vs1_name }}-psp_act_oauth_client"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_allow"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_end_deny"
+          partition: "Common"
+        - name: "{{ vs1_name }}-psp_ent"
+          partition: "Common"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+# =========================================================================
+# CREATE ACCESS PROFILE
+# =========================================================================
+
+- name: Create access profile
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      X-F5-REST-Coordination-Id: "{{ trans_id }}"
+    body_format: json
+    body:
+      name: "{{ vs1_name }}-psp"
+      partition: "Common"
+      acceptLanguages:
+        - "en"
+      accessPolicy: "/Common/{{ vs1_name }}-psp"
+      customizationGroup: "/Common/{{ vs1_name }}-psp_logout"
+      epsGroup: "/Common/{{ vs1_name }}-psp_eps"
+      errormapGroup: "/Common/{{ vs1_name }}-psp_errormap"
+      frameworkInstallationGroup: "/Common/{{ vs1_name }}-psp_framework_installation"
+      generalUiGroup: "/Common/{{ vs1_name }}-psp_general_ui"
+      accessPolicyTimeout: 300
+      defaultLanguage: "en"
+      httponlyCookie: "false"
+      inactivityTimeout: 900
+      logoutUriTimeout: 5
+      maxConcurrentSessions: 0
+      maxConcurrentUsers: 0
+      maxFailureDelay: 5
+      maxInProgressSessions: 128
+      maxSessionTimeout: 604800
+      minFailureDelay: 2
+      modifiedSinceLastPolicySync: "false"
+      persistentCookie: "false"
+      restrictToSingleClientIp: "false"
+      scope: "profile"
+      secureCookie: "true"
+      type: "all"
+      useHttp_503OnError: "false"
+      userIdentityMethod: "http"
+      logSettings:
+        - "/Common/default-log-setting"
+    status_code: [200, 409]
+  tags:
+    - policy
+
+# =========================================================================
+# COMMIT TRANSACTION
+# =========================================================================
+
+- name: Commit transaction
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/transaction/{{ trans_id }}/"
+    method: PUT
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      state: "VALIDATING"
+    status_code: [200, 409]
+  register: commit_result
+  tags:
+    - policy
+
+- name: Display transaction commit result
+  debug:
+    msg: "Transaction {{ trans_id }} committed: {{ commit_result.status }}"
+  tags:
+    - policy
+
+# =========================================================================
+# APPLY POLICY
+# =========================================================================
+
+- name: Apply access policy
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ vs1_name }}-psp"
+    method: PATCH
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      generationAction: "increment"
+    status_code: [200]
+  register: apply_result
+  tags:
+    - policy
+
+- name: Display policy apply result
+  debug:
+    msg: "Access policy {{ vs1_name }}-psp applied successfully"
+  tags:
+    - policy
