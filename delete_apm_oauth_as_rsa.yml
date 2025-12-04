@@ -1,0 +1,228 @@
+---
+# Solution 10: Delete OAuth Authorization Server with RSA Signing
+# Removes all components created by deploy_apm_oauth_as_rsa.yml
+#
+# Usage:
+#   ansible-playbook delete_apm_oauth_as_rsa.yml -e confirm_delete=true
+#
+# Note: CA certificate is NOT deleted (may be used by other services)
+
+- name: Delete OAuth Authorization Server with RSA Signing (Solution 10)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution10.yml
+
+  vars:
+    confirm_delete: false
+
+  tasks:
+    # =========================================================================
+    # SAFETY CHECK
+    # =========================================================================
+
+    - name: Confirm deletion
+      fail:
+        msg: |
+          SAFETY CHECK: This playbook will delete Solution 10 components.
+          To proceed, run with: -e confirm_delete=true
+
+          Components that will be deleted:
+          - AS3 Tenant: {{ partition_name }}
+          - Access Profile: {{ access_profile.name }}
+          - Access Policy: {{ vs1_name }}-psp
+          - OAuth Profile: {{ oauth_profile.name }}
+          - JWK: {{ jwk_config.name }}
+          - AD AAA Server: {{ ad_aaa_server.name }}
+          - AD Pool: {{ ad_pool.name }}
+
+          NOTE: CA certificate {{ ca_cert.name }} will NOT be deleted
+          (it may be used by other services)
+      when: not confirm_delete | bool
+      tags:
+        - always
+
+    - name: Display deletion warning
+      debug:
+        msg: |
+          ============================================================
+          DELETING Solution 10: OAuth Authorization Server (RS256)
+          ============================================================
+          This will remove all Solution 10 components from BIG-IP.
+          ============================================================
+      tags:
+        - always
+
+    # =========================================================================
+    # DELETE AS3 APPLICATION
+    # =========================================================================
+
+    - name: Delete AS3 tenant
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare/{{ partition_name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 204, 404, 422]
+        timeout: 120
+      register: as3_delete
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deletion result
+      debug:
+        msg: "AS3 tenant {{ partition_name }}: {{ 'deleted' if as3_delete.status in [200, 204] else 'not found or already deleted' }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DELETE ACCESS PROFILE AND POLICY
+    # =========================================================================
+
+    - name: Delete access profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/access/~Common~{{ access_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+        - profile
+
+    - name: Delete access policy
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/access-policy/~Common~{{ vs1_name }}-psp"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - policy
+
+    # =========================================================================
+    # DELETE CUSTOMIZATION GROUPS
+    # =========================================================================
+
+    - name: Delete customization groups
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/policy/customization-group/~Common~{{ item }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      loop:
+        - "{{ vs1_name }}-psp_logout"
+        - "{{ vs1_name }}-psp_eps"
+        - "{{ vs1_name }}-psp_errormap"
+        - "{{ vs1_name }}-psp_framework_installation"
+        - "{{ vs1_name }}-psp_general_ui"
+        - "{{ vs1_name }}-psp_end_deny_ag"
+        - "{{ vs1_name }}-psp_act_logon_page_ag"
+        - "{{ vs1_name }}-psp_act_oauth_authz_ag"
+      loop_control:
+        label: "{{ item }}"
+      tags:
+        - policy
+        - customization
+
+    # =========================================================================
+    # DELETE OAUTH PROFILE
+    # =========================================================================
+
+    - name: Delete OAuth profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/oauth/~Common~{{ oauth_profile.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - profile
+
+    # =========================================================================
+    # DELETE JWK CONFIGURATION
+    # =========================================================================
+
+    - name: Delete JWK configuration
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwk-config/~Common~{{ jwk_config.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - oauth
+        - jwk
+
+    # =========================================================================
+    # DELETE AD AAA CONFIGURATION
+    # =========================================================================
+
+    - name: Delete AD AAA server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory/~Common~{{ ad_aaa_server.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    - name: Delete AD pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/~Common~{{ ad_pool.name }}"
+        method: DELETE
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      tags:
+        - aaa
+        - ad
+
+    # Note: AD node and CA certificate are not deleted
+    # as they may be used by other configurations
+
+    # =========================================================================
+    # DELETION SUMMARY
+    # =========================================================================
+
+    - name: Display deletion summary
+      debug:
+        msg: |
+          ============================================================
+          Solution 10 Deletion Complete
+          ============================================================
+
+          Deleted Components:
+          - AS3 Tenant: {{ partition_name }}
+          - Access Profile: {{ access_profile.name }}
+          - Access Policy: {{ vs1_name }}-psp
+          - Customization Groups: 8 groups
+          - OAuth Profile: {{ oauth_profile.name }}
+          - JWK: {{ jwk_config.name }}
+          - AD AAA Server: {{ ad_aaa_server.name }}
+          - AD Pool: {{ ad_pool.name }}
+
+          NOT Deleted (may be used by other services):
+          - AD Node: {{ ad_server_ip }}
+          - CA Certificate: {{ ca_cert.name }}
+          - Wildcard Certificate: {{ wildcard_cert.name }}
+
+          ============================================================
+      tags:
+        - always

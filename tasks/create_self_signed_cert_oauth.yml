@@ -1,0 +1,125 @@
+---
+###############################################
+# Create Self-Signed Certificate for OAuth RS256 Signing
+# Generates a certificate and key for JWT signing with RS256
+#
+# This is a DEMO/LAB workaround - for production, use a proper
+# certificate issued by your organization's CA.
+###############################################
+
+- name: Display self-signed certificate warning
+  debug:
+    msg: |
+      ============================================================
+      WARNING: Creating Self-Signed Certificate for RS256 Signing
+      ============================================================
+      This is intended for DEMO/LAB environments only.
+
+      For production deployments:
+      - Use a certificate issued by your organization's CA
+      - Import the certificate via BIG-IP GUI or API before running
+      - Set use_self_signed_cert: false in vars/solution10.yml
+      ============================================================
+
+- name: Generate self-signed certificate and key locally
+  command: >
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048
+    -keyout /tmp/{{ wildcard_cert.name }}.key
+    -out /tmp/{{ wildcard_cert.name }}.crt
+    -subj "/C=US/ST=State/L=City/O=Organization/CN={{ dns1_name }}"
+  delegate_to: localhost
+  args:
+    creates: /tmp/{{ wildcard_cert.name }}.crt
+
+- name: Read certificate file
+  set_fact:
+    oauth_cert_content: "{{ lookup('file', '/tmp/' + wildcard_cert.name + '.crt') }}"
+  delegate_to: localhost
+
+- name: Read key file
+  set_fact:
+    oauth_key_content: "{{ lookup('file', '/tmp/' + wildcard_cert.name + '.key') }}"
+  delegate_to: localhost
+
+- name: Upload certificate to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ wildcard_cert.name }}.crt"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Range: "0-{{ oauth_cert_content | length - 1 }}/{{ oauth_cert_content | length }}"
+    body: "{{ oauth_cert_content }}"
+    status_code: [200, 201]
+    timeout: 30
+  delegate_to: localhost
+
+- name: Upload private key to BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ wildcard_cert.name }}.key"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    headers:
+      Content-Type: "application/octet-stream"
+      Content-Range: "0-{{ oauth_key_content | length - 1 }}/{{ oauth_key_content | length }}"
+    body: "{{ oauth_key_content }}"
+    status_code: [200, 201]
+    timeout: 30
+  delegate_to: localhost
+
+- name: Install private key on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ wildcard_cert.name }}"
+      partition: "Common"
+      sourcePath: "file:/var/config/rest/downloads/{{ wildcard_cert.name }}.key"
+    status_code: [200, 201, 400, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: oauth_key_install_result
+
+- name: Install certificate on BIG-IP
+  uri:
+    url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+    method: POST
+    user: "{{ bigip_username }}"
+    password: "{{ bigip_password }}"
+    validate_certs: "{{ validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ wildcard_cert.name }}"
+      partition: "Common"
+      commonName: "{{ dns1_name }}"
+      sourcePath: "file:/var/config/rest/downloads/{{ wildcard_cert.name }}.crt"
+      key: "/Common/{{ wildcard_cert.name }}"
+    status_code: [200, 201, 400, 409]
+    timeout: 30
+  delegate_to: localhost
+  register: oauth_cert_install_result
+
+- name: Display certificate installation status
+  debug:
+    msg:
+      - "Self-signed certificate created for RS256 signing"
+      - "Certificate Status: {{ oauth_cert_install_result.status }}"
+      - "Private Key Status: {{ oauth_key_install_result.status }}"
+      - "Certificate Name: /Common/{{ wildcard_cert.name }}"
+
+- name: Clean up local temporary files
+  file:
+    path: "{{ item }}"
+    state: absent
+  delegate_to: localhost
+  loop:
+    - "/tmp/{{ wildcard_cert.name }}.crt"
+    - "/tmp/{{ wildcard_cert.name }}.key"

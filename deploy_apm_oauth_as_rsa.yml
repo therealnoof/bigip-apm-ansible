@@ -1,0 +1,650 @@
+---
+# Solution 10: OAuth Authorization Server with RSA Signing (RS256)
+# Deploys BIG-IP APM as OAuth Authorization Server using RSA asymmetric keys
+#
+# Key Difference from Solution 8:
+# - Uses RS256 (RSA asymmetric keys) instead of HS256 (symmetric shared secret)
+# - Requires X.509 certificates: wildcard cert for signing + CA cert for chain
+# - Public key available via JWKS endpoint for client verification
+#
+# PREREQUISITE: Wildcard certificate must already be imported on BIG-IP
+# The playbook will import the CA certificate from configuration
+#
+# Usage:
+#   ansible-playbook deploy_apm_oauth_as_rsa.yml
+#
+# This playbook creates:
+# - AD Server Node and Pool
+# - AD AAA Server
+# - CA Certificate (uploaded and installed)
+# - JWK Configuration (RS256 with certificate references)
+# - OAuth Profile (JWT tokens with RSA signing)
+# - Access Policy (Logon → AD Auth → AD Query → OAuth Authz)
+# - Access Profile
+# - AS3 Application (Virtual Server with OAuth endpoints)
+
+- name: Deploy OAuth Authorization Server with RSA Signing (Solution 10)
+  hosts: bigip
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - vars/solution10.yml
+
+  vars:
+    # Customization groups required for the access policy
+    customization_groups:
+      - name: "{{ vs1_name }}-psp_logout"
+        source: "/Common/{{ custom_type }}"
+        type: "logout"
+      - name: "{{ vs1_name }}-psp_eps"
+        source: "/Common/{{ custom_type }}"
+        type: "eps"
+      - name: "{{ vs1_name }}-psp_errormap"
+        source: "/Common/{{ custom_type }}"
+        type: "errormap"
+      - name: "{{ vs1_name }}-psp_framework_installation"
+        source: "/Common/{{ custom_type }}"
+        type: "framework-installation"
+      - name: "{{ vs1_name }}-psp_general_ui"
+        source: "/Common/{{ custom_type }}"
+        type: "general-ui"
+      - name: "{{ vs1_name }}-psp_end_deny_ag"
+        source: "/Common/{{ custom_type }}"
+        type: "logout"
+      - name: "{{ vs1_name }}-psp_act_logon_page_ag"
+        source: "/Common/{{ custom_type }}"
+        type: "logon"
+      - name: "{{ vs1_name }}-psp_act_oauth_authz_ag"
+        source: "/Common/{{ custom_type }}"
+        type: "oauth-authz"
+
+  tasks:
+    # =========================================================================
+    # DISPLAY DEPLOYMENT INFO
+    # =========================================================================
+
+    - name: Display deployment information
+      debug:
+        msg: |
+          ============================================================
+          Deploying Solution 10: OAuth Authorization Server (RS256)
+          ============================================================
+          Virtual Server: {{ vs1_name }}
+          DNS Name: {{ dns1_name }}
+          Virtual IP: {{ as3_config.virtual_address }}:{{ as3_config.virtual_port }}
+          Signing Algorithm: RS256 (RSA with SHA-256)
+          Certificate: {{ wildcard_cert.name }}
+          CA Certificate: {{ ca_cert.name }}
+          ============================================================
+      tags:
+        - always
+
+    # =========================================================================
+    # CREATE AD INFRASTRUCTURE
+    # =========================================================================
+
+    - name: Create AD server node
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/node"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ ad_server_ip }}"
+          address: "{{ ad_server_ip }}"
+        status_code: [200, 201, 409]
+      tags:
+        - aaa
+        - ad
+
+    - name: Create AD server pool
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/ltm/pool/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ ad_pool.name }}"
+          monitor: "{{ ad_pool.monitor }}"
+          members:
+            - name: "{{ ad_server_ip }}:0"
+              address: "{{ ad_server_ip }}"
+        status_code: [200, 201, 409]
+      tags:
+        - aaa
+        - ad
+
+    - name: Create APM AAA Active Directory server
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/aaa/active-directory"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ ad_aaa_server.name }}"
+          adminName: "{{ ad_aaa_server.admin_name }}"
+          adminEncryptedPassword: "{{ ad_aaa_server.admin_password }}"
+          domain: "{{ ad_aaa_server.domain }}"
+          pool: "/Common/{{ ad_pool.name }}"
+          cleanupCache: "{{ ad_aaa_server.cleanup_cache }}"
+          groupCacheTtl: "{{ ad_aaa_server.group_cache_ttl }}"
+          kdcLockoutDuration: "{{ ad_aaa_server.kdc_lockout_duration }}"
+          locationSpecific: "{{ ad_aaa_server.location_specific }}"
+          padata: "{{ ad_aaa_server.padata }}"
+          psoCacheTtl: "{{ ad_aaa_server.pso_cache_ttl }}"
+          timeout: "{{ ad_aaa_server.timeout }}"
+          usePool: "{{ ad_aaa_server.use_pool }}"
+          domainControllers: "{{ ad_aaa_server.domain_controllers }}"
+        status_code: [200, 201, 409]
+      register: ad_server_result
+      tags:
+        - aaa
+        - ad
+
+    - name: Display AD server creation result
+      debug:
+        msg: "AD AAA Server {{ ad_aaa_server.name }}: {{ 'created' if ad_server_result.status in [200, 201] else 'already exists' }}"
+      tags:
+        - aaa
+        - ad
+
+    # =========================================================================
+    # IMPORT CA CERTIFICATE
+    # =========================================================================
+
+    - name: Calculate CA certificate content length
+      set_fact:
+        ca_cert_content_length: "{{ ca_cert.content | length }}"
+      tags:
+        - certificate
+
+    - name: Upload CA certificate file
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/file-transfer/uploads/{{ ca_cert.name }}.crt"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        headers:
+          Content-Type: "application/octet-stream"
+          Content-Range: "0-{{ (ca_cert_content_length | int) - 1 }}/{{ ca_cert_content_length }}"
+        body: "{{ ca_cert.content }}"
+        status_code: [200, 409]
+      tags:
+        - certificate
+
+    - name: Install CA certificate
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          command: "install"
+          name: "{{ ca_cert.name }}"
+          from-local-file: "/var/config/rest/downloads/{{ ca_cert.name }}.crt"
+        status_code: [200, 400]
+      register: ca_cert_install
+      tags:
+        - certificate
+
+    - name: Display CA certificate installation result
+      debug:
+        msg: "CA certificate {{ ca_cert.name }}: {{ 'installed' if ca_cert_install.status == 200 else 'already exists' }}"
+      tags:
+        - certificate
+
+    # =========================================================================
+    # CERTIFICATE MANAGEMENT (Self-Signed or Pre-Imported)
+    # =========================================================================
+
+    - name: Check if certificate already exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/cert/~Common~{{ wildcard_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: wildcard_cert_check
+      tags:
+        - certificate
+        - jwk
+
+    # Option 1: Create self-signed certificate (DEMO/LAB only)
+    - name: Create self-signed certificate for RS256 signing
+      include_tasks: tasks/create_self_signed_cert_oauth.yml
+      when:
+        - use_self_signed_cert | default(false) | bool
+        - wildcard_cert_check.status == 404
+      tags:
+        - certificate
+        - jwk
+
+    # Option 2: Fail if no certificate and self-signed is disabled
+    - name: Fail if certificate doesn't exist and self-signed is disabled
+      fail:
+        msg: |
+          ERROR: Certificate '{{ wildcard_cert.name }}' not found on BIG-IP.
+
+          Solution 10 requires a certificate for RS256 signing.
+
+          OPTIONS:
+          1. Enable self-signed certificate (DEMO/LAB only):
+             Set 'use_self_signed_cert: true' in vars/solution10.yml
+
+          2. Import your own certificate (PRODUCTION):
+             - GUI: System > Certificate Management > Traffic Certificate Management
+             - API: POST /mgmt/tm/sys/crypto/cert with certificate content
+             - Then set 'use_self_signed_cert: false' in vars/solution10.yml
+      when:
+        - not (use_self_signed_cert | default(false) | bool)
+        - wildcard_cert_check.status == 404
+      tags:
+        - certificate
+        - jwk
+
+    # Verify key exists (after potential self-signed creation)
+    - name: Check if private key exists
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/sys/crypto/key/~Common~{{ wildcard_cert.name }}"
+        method: GET
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200, 404]
+      register: wildcard_key_check
+      tags:
+        - certificate
+        - jwk
+
+    - name: Fail if private key doesn't exist
+      fail:
+        msg: |
+          ERROR: Private key '{{ wildcard_cert.name }}' not found on BIG-IP.
+
+          Solution 10 requires the private key for RS256 signing.
+          Please import the certificate and key before running this playbook.
+      when: wildcard_key_check.status == 404
+      tags:
+        - certificate
+        - jwk
+
+    - name: Display certificate verification result
+      debug:
+        msg: "Certificate '{{ wildcard_cert.name }}' verified on BIG-IP (self-signed: {{ use_self_signed_cert | default(false) }})"
+      when: wildcard_key_check.status == 200
+      tags:
+        - certificate
+        - jwk
+
+    # =========================================================================
+    # CREATE JWK CONFIGURATION (RS256)
+    # =========================================================================
+
+    # Build JWK body dynamically - with or without cert chain
+    - name: Build JWK config body (with cert chain)
+      set_fact:
+        jwk_body:
+          name: "{{ jwk_config.name }}"
+          partition: "{{ jwk_config.partition }}"
+          algType: "{{ jwk_config.alg_type }}"
+          autoGenerated: "{{ jwk_config.auto_generated }}"
+          cert: "{{ jwk_config.cert }}"
+          certChain: "{{ jwk_config.cert_chain }}"
+          certKey: "{{ jwk_config.cert_key }}"
+          includeX5c: "{{ jwk_config.include_x5c }}"
+          keyId: "{{ jwk_config.key_id }}"
+          keyType: "{{ jwk_config.key_type }}"
+          keyUse: "{{ jwk_config.key_use }}"
+          passphrase: "{{ jwk_config.passphrase }}"
+          sharedSecretEncFormat: "{{ jwk_config.shared_secret_enc_format }}"
+          useClientSecret: "{{ jwk_config.use_client_secret }}"
+      when: not (use_self_signed_cert | default(false) | bool)
+      tags:
+        - oauth
+        - jwk
+
+    - name: Build JWK config body (self-signed - no cert chain)
+      set_fact:
+        jwk_body:
+          name: "{{ jwk_config.name }}"
+          partition: "{{ jwk_config.partition }}"
+          algType: "{{ jwk_config.alg_type }}"
+          autoGenerated: "{{ jwk_config.auto_generated }}"
+          cert: "{{ jwk_config.cert }}"
+          certKey: "{{ jwk_config.cert_key }}"
+          includeX5c: "{{ jwk_config.include_x5c }}"
+          keyId: "{{ jwk_config.key_id }}"
+          keyType: "{{ jwk_config.key_type }}"
+          keyUse: "{{ jwk_config.key_use }}"
+          sharedSecretEncFormat: "{{ jwk_config.shared_secret_enc_format }}"
+          useClientSecret: "{{ jwk_config.use_client_secret }}"
+      when: use_self_signed_cert | default(false) | bool
+      tags:
+        - oauth
+        - jwk
+
+    - name: Create JWK configuration (RS256)
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/oauth/jwk-config/"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body: "{{ jwk_body }}"
+        status_code: [200, 201, 409]
+      register: jwk_result
+      tags:
+        - oauth
+        - jwk
+
+    - name: Display JWK creation result
+      debug:
+        msg: "JWK {{ jwk_config.name }} (RS256): {{ 'created' if jwk_result.status in [200, 201] else 'already exists' }}"
+      tags:
+        - oauth
+        - jwk
+
+    # =========================================================================
+    # CREATE OAUTH PROFILE
+    # =========================================================================
+
+    - name: Create OAuth profile
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/tm/apm/profile/oauth"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body:
+          name: "{{ oauth_profile.name }}"
+          partition: "{{ oauth_profile.partition }}"
+          defaultsFrom: "{{ oauth_profile.defaults_from }}"
+          dbInstance: "{{ oauth_profile.db_instance }}"
+          issuer: "{{ oauth_profile.issuer }}"
+          primaryKey: "{{ oauth_profile.primary_key }}"
+          idTokenPrimaryKey: "{{ oauth_profile.id_token_primary_key }}"
+          jwtToken: "{{ oauth_profile.jwt_token }}"
+          opaqueToken: "{{ oauth_profile.opaque_token }}"
+          accessTokenLifetime: "{{ oauth_profile.access_token_lifetime }}"
+          jwtAccessTokenLifetime: "{{ oauth_profile.jwt_access_token_lifetime }}"
+          idTokenLifetime: "{{ oauth_profile.id_token_lifetime }}"
+          authCodeLifetime: "{{ oauth_profile.auth_code_lifetime }}"
+          refreshTokenLifetime: "{{ oauth_profile.refresh_token_lifetime }}"
+          jwtRefreshTokenLifetime: "{{ oauth_profile.jwt_refresh_token_lifetime }}"
+          generateRefreshToken: "{{ oauth_profile.generate_refresh_token }}"
+          generateJwtRefreshToken: "{{ oauth_profile.generate_jwt_refresh_token }}"
+          reuseAccessToken: "{{ oauth_profile.reuse_access_token }}"
+          reuseRefreshToken: "{{ oauth_profile.reuse_refresh_token }}"
+          openidConnect: "{{ oauth_profile.openid_connect }}"
+          ignoreExpiredCert: "{{ oauth_profile.ignore_expired_cert }}"
+          jwtEcSignatureFormat: "{{ oauth_profile.jwt_ec_signature_format }}"
+          jwtRefreshTokenEncSecret: "{{ oauth_profile.jwt_refresh_token_enc_secret }}"
+          authUrl: "{{ oauth_profile.auth_url }}"
+          tokenIssuanceUrl: "{{ oauth_profile.token_issuance_url }}"
+          tokenIntrospectionUrl: "{{ oauth_profile.token_introspection_url }}"
+          tokenRevocationUrl: "{{ oauth_profile.token_revocation_url }}"
+          jwksUrl: "{{ oauth_profile.jwks_url }}"
+          openidCfgUrl: "{{ oauth_profile.openid_cfg_url }}"
+          userinfoUrl: "{{ oauth_profile.userinfo_url }}"
+        status_code: [200, 201, 409]
+      register: oauth_profile_result
+      tags:
+        - oauth
+        - profile
+
+    - name: Display OAuth profile creation result
+      debug:
+        msg: "OAuth profile {{ oauth_profile.name }}: {{ 'created' if oauth_profile_result.status in [200, 201] else 'already exists' }}"
+      tags:
+        - oauth
+        - profile
+
+    # =========================================================================
+    # CREATE ACCESS POLICY
+    # =========================================================================
+
+    - name: Include access policy creation tasks
+      include_tasks: tasks/access_policy_solution10.yml
+      tags:
+        - policy
+
+    # =========================================================================
+    # DEPLOY AS3 APPLICATION
+    # =========================================================================
+
+    # Build TLS certificate config (reference to BIG-IP certificate)
+    - name: Build TLS server certificate config
+      set_fact:
+        tls_cert_config:
+          class: "Certificate"
+          certificate:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+          privateKey:
+            bigip: "/Common/{{ wildcard_cert.name }}"
+      tags:
+        - application
+        - as3
+
+    # Build TLS server profile config
+    - name: Build TLS server profile config
+      set_fact:
+        tls_server_config:
+          class: "TLS_Server"
+          certificates:
+            - certificate: "tlsserver_local_cert"
+      tags:
+        - application
+        - as3
+
+    # Build virtual server config
+    - name: Build virtual server config
+      set_fact:
+        vs_config:
+          class: "Service_HTTPS"
+          virtualAddresses:
+            - "{{ as3_config.virtual_address }}"
+          virtualPort: 443
+          serverTLS: "{{ vs1_name }}-clientssl"
+          snat: "{{ as3_config.snat }}"
+          profileAccess:
+            bigip: "/Common/{{ access_profile.name }}"
+      tags:
+        - application
+        - as3
+
+    # Build pool config
+    - name: Build pool config
+      set_fact:
+        pool_config:
+          class: "Pool"
+          monitors:
+            - http
+          members:
+            - servicePort: 80
+              serverAddresses:
+                - "{{ as3_config.pool_members[0].address }}"
+      tags:
+        - application
+        - as3
+
+    # Add pool to virtual server
+    - name: Update virtual server with pool reference
+      set_fact:
+        vs_config: "{{ vs_config | combine({'pool': vs1_name + '-pool'}) }}"
+      tags:
+        - application
+        - as3
+
+    # Build application config
+    - name: Build application config
+      set_fact:
+        app_config:
+          class: "Application"
+          template: "generic"
+      tags:
+        - application
+        - as3
+
+    - name: Add virtual server to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name: vs_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add TLS server profile to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name + '-clientssl': tls_server_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add certificate to application
+      set_fact:
+        app_config: "{{ app_config | combine({'tlsserver_local_cert': tls_cert_config}) }}"
+      tags:
+        - application
+        - as3
+
+    - name: Add pool to application
+      set_fact:
+        app_config: "{{ app_config | combine({vs1_name + '-pool': pool_config}) }}"
+      tags:
+        - application
+        - as3
+
+    # Build tenant config
+    - name: Build tenant config
+      set_fact:
+        tenant_config:
+          class: "Tenant"
+      tags:
+        - application
+        - as3
+
+    - name: Add application to tenant
+      set_fact:
+        tenant_config: "{{ tenant_config | combine({vs1_name: app_config}) }}"
+      tags:
+        - application
+        - as3
+
+    # Build AS3 declaration
+    - name: Build AS3 declaration
+      set_fact:
+        as3_declaration:
+          class: "ADC"
+          schemaVersion: "3.14.0"
+          id: "APM"
+      tags:
+        - application
+        - as3
+
+    - name: Add tenant to declaration
+      set_fact:
+        as3_declaration: "{{ as3_declaration | combine({partition_name: tenant_config}) }}"
+      tags:
+        - application
+        - as3
+
+    # Wrap in AS3 action
+    - name: Wrap declaration in AS3 action
+      set_fact:
+        as3_body:
+          class: "AS3"
+          action: "deploy"
+          persist: true
+          declaration: "{{ as3_declaration }}"
+      tags:
+        - application
+        - as3
+
+    - name: Deploy AS3 application
+      uri:
+        url: "https://{{ bigip_mgmt }}:{{ bigip_port }}/mgmt/shared/appsvcs/declare"
+        method: POST
+        user: "{{ bigip_username }}"
+        password: "{{ bigip_password }}"
+        validate_certs: "{{ validate_certs }}"
+        body_format: json
+        body: "{{ as3_body }}"
+        status_code: [200, 202]
+        timeout: 120
+      register: as3_result
+      tags:
+        - application
+        - as3
+
+    - name: Display AS3 deployment result
+      debug:
+        msg: "AS3 application deployed: {{ as3_result.json.results[0].message | default('Success') }}"
+      tags:
+        - application
+        - as3
+
+    # =========================================================================
+    # DEPLOYMENT SUMMARY
+    # =========================================================================
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ============================================================
+          OAuth Authorization Server (RS256) Deployment Complete
+          ============================================================
+
+          Components Created:
+          - AD AAA Server: {{ ad_aaa_server.name }}
+          - CA Certificate: {{ ca_cert.name }}
+          - JWK (RS256): {{ jwk_config.name }}
+          - OAuth Profile: {{ oauth_profile.name }}
+          - Access Profile: {{ access_profile.name }}
+          - AS3 Tenant: {{ partition_name }}
+
+          Virtual Server Configuration:
+          - Address: https://{{ as3_config.virtual_address }}:443
+          - DNS Name: {{ dns1_name }}
+          - Access Profile: {{ access_profile.name }}
+          - OAuth Profile: {{ oauth_profile.name }}
+
+          OAuth Endpoints:
+          - Authorization: https://{{ dns1_name }}{{ oauth_profile.auth_url }}
+          - Token: https://{{ dns1_name }}{{ oauth_profile.token_issuance_url }}
+          - Introspection: https://{{ dns1_name }}{{ oauth_profile.token_introspection_url }}
+          - JWKS: https://{{ dns1_name }}{{ oauth_profile.jwks_url }}
+          - OpenID Config: https://{{ dns1_name }}{{ oauth_profile.openid_cfg_url }}
+
+          Signing Configuration:
+          - Algorithm: RS256 (RSA with SHA-256)
+          - Certificate: {{ wildcard_cert.name }}
+          - CA Chain: {{ ca_cert.name }}
+          - Self-Signed: {{ use_self_signed_cert | default(false) }}
+
+          ============================================================
+
+          NOTE: RS256 signing allows OAuth clients to verify tokens
+          using the public key from the JWKS endpoint without needing
+          a shared secret.
+          {% if use_self_signed_cert | default(false) %}
+
+          WARNING: Self-signed certificate is being used. This is
+          intended for DEMO/LAB environments only. For production,
+          import a proper certificate and set use_self_signed_cert: false
+          {% endif %}
+
+          ============================================================
+      tags:
+        - always

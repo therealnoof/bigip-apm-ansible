@@ -147,6 +147,51 @@ This project automates the deployment of production-ready APM solutions includin
 
 **Source:** [solution9-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution9/postman/solution9-create.postman_collection.json)
 
+### Solution 10: OAuth Authorization Server with RSA Signing (RS256)
+- **OAuth 2.0 Authorization Server** - BIG-IP APM acts as OAuth AS issuing JWT tokens
+- **RS256 Signing** - Asymmetric RSA keys for JWT signing (vs HS256 symmetric in Solution 8)
+- **JWK Configuration** - JSON Web Key with RSA certificate and private key
+- **JWKS Endpoint** - Public key available for token verification without shared secrets
+- **Self-Signed Certificate Option** - Automatic certificate generation for DEMO/LAB environments
+- **Active Directory Authentication** - User authentication via AD before token issuance
+- **AD Query** - Retrieve user attributes for token claims
+- **JWT Tokens** - Access tokens and refresh tokens signed with RSA private key
+- **Access Policy** - Logon Page → AD Auth → AD Query → OAuth Authorization
+- **Application Deployment** - AS3-based HTTPS virtual server with OAuth endpoints
+
+**Use Case:** API security requiring asymmetric key signing. Unlike Solution 8 (HS256), RS256 allows OAuth clients to verify tokens using the public key from the JWKS endpoint without needing a shared secret. Ideal for public APIs, microservices, and scenarios where token verification must be distributed.
+
+**Key Difference from Solution 8:**
+| Feature | Solution 8 (HS256) | Solution 10 (RS256) |
+|---------|-------------------|---------------------|
+| Algorithm | Symmetric (shared secret) | Asymmetric (public/private key) |
+| Token Verification | Requires shared secret | Uses public key from JWKS |
+| Certificate Required | No | Yes (wildcard or self-signed) |
+| Use Case | Internal APIs | Public APIs, distributed systems |
+
+**OAuth Endpoints:**
+- Authorization: `/f5-oauth2/v1/authorize`
+- Token: `/f5-oauth2/v1/token`
+- Token Introspection: `/f5-oauth2/v1/introspect`
+- Token Revocation: `/f5-oauth2/v1/revoke`
+- JWKS: `/f5-oauth2/v1/jwks` (returns RSA public key)
+- OpenID Configuration: `/f5-oauth2/v1/.well-known/openid-configuration`
+
+**Certificate Options:**
+
+| Mode | Configuration | Use Case |
+|------|---------------|----------|
+| Self-Signed (Default) | `use_self_signed_cert: true` | DEMO/LAB environments |
+| Pre-Imported | `use_self_signed_cert: false` | Production environments |
+
+> **WARNING:** Self-signed certificates should NOT be used in production. For production deployments, import a proper certificate from your organization's CA before running the playbook and set `use_self_signed_cert: false`.
+
+**Prerequisites:**
+- For production: Import wildcard certificate via BIG-IP GUI or API before deployment
+- Active Directory server accessible from BIG-IP
+
+**Source:** [solution10-create Postman collection](https://github.com/f5devcentral/access-solutions/blob/master/solution10/postman/solution10-create.postman_collection.json)
+
 ## Architecture
 
 ### Solution 1: VPN Access Flow
@@ -684,6 +729,7 @@ bigip-apm-ansible/
 ├── deploy_apm_sideband.yml           # Solution 7: SAML with Sideband Communication
 ├── deploy_apm_oauth_as.yml           # Solution 8: OAuth Authorization Server
 ├── deploy_apm_oauth_rs.yml           # Solution 9: OAuth Resource Server
+├── deploy_apm_oauth_as_rsa.yml       # Solution 10: OAuth AS with RS256 signing
 ├── delete_apm_vpn.yml                # Solution 1/2: Interactive deletion playbook
 ├── delete_apm_portal.yml             # Solution 2: Interactive deletion playbook
 ├── delete_apm_saml.yml               # Solution 3: Interactive deletion playbook
@@ -693,6 +739,7 @@ bigip-apm-ansible/
 ├── delete_apm_sideband.yml           # Solution 7: Interactive deletion playbook
 ├── delete_apm_oauth_as.yml           # Solution 8: Interactive deletion playbook
 ├── delete_apm_oauth_rs.yml           # Solution 9: Interactive deletion playbook
+├── delete_apm_oauth_as_rsa.yml       # Solution 10: Interactive deletion playbook
 ├── cleanup_apm_vpn.yml               # Solution 1: Automated cleanup playbook
 ├── cleanup_apm_portal.yml            # Solution 2: Automated cleanup playbook
 ├── cleanup_apm_saml.yml              # Solution 3: Automated cleanup playbook
@@ -707,7 +754,8 @@ bigip-apm-ansible/
 │   ├── solution6.yml                 # Solution 6 variables (Certificate + Kerberos)
 │   ├── solution7.yml                 # Solution 7 variables (SAML + Sideband)
 │   ├── solution8.yml                 # Solution 8 variables (OAuth Authorization Server)
-│   └── solution9.yml                 # Solution 9 variables (OAuth Resource Server)
+│   ├── solution9.yml                 # Solution 9 variables (OAuth Resource Server)
+│   └── solution10.yml                # Solution 10 variables (OAuth AS with RS256)
 ├── tasks/
 │   ├── aaa_ad_servers.yml            # AD server configuration
 │   ├── connectivity_profile.yml       # VPN tunnel and connectivity
@@ -719,6 +767,7 @@ bigip-apm-ansible/
 │   ├── saml_sp_connector.yml         # SAML SP connector (Solution 4)
 │   ├── saml_idp_service.yml          # SAML IDP service (Solution 4)
 │   ├── create_self_signed_cert.yml   # Certificate generation (Solution 4)
+│   ├── create_self_signed_cert_oauth.yml # Certificate generation (Solution 10)
 │   ├── webtop.yml                    # Webtop configuration
 │   ├── access_policy.yml             # Solution 1 per-session policy
 │   ├── access_policy_solution2.yml    # Solution 2 policy with AD groups
@@ -730,6 +779,7 @@ bigip-apm-ansible/
 │   ├── access_policy_solution7_vs2.yml # Solution 7 VS2 policy (receive sideband)
 │   ├── access_policy_solution8.yml    # Solution 8 policy with OAuth authorization
 │   ├── access_policy_solution9.yml    # Solution 9 policy with OAuth scope validation
+│   ├── access_policy_solution10.yml   # Solution 10 policy with OAuth authorization
 │   ├── saml_idp_connector_internal.yml # SAML IDP connector for internal IDP (Solution 5)
 │   ├── import_ca_certificate.yml      # CA certificate import (Solution 6)
 │   ├── kerberos_sso.yml               # Kerberos SSO profile (Solution 6)
@@ -1357,6 +1407,69 @@ ansible-playbook deploy_apm_oauth_rs.yml --tags application,as3
 - The shared secret must match the JWK configured on the Authorization Server
 - See "Solution 9 Implementation Notes" below for API limitations and workarounds
 
+### Solution 10: OAuth Authorization Server with RS256
+
+Deploy the OAuth Authorization Server using RSA asymmetric keys for JWT signing:
+
+```bash
+# Default: Self-signed certificate (DEMO/LAB only)
+ansible-playbook deploy_apm_oauth_as_rsa.yml
+
+# Production: Pre-imported certificate
+# First, import your certificate to BIG-IP, then:
+ansible-playbook deploy_apm_oauth_as_rsa.yml -e use_self_signed_cert=false
+```
+
+**Certificate Options:**
+
+| Mode | Command | Use Case |
+|------|---------|----------|
+| Self-Signed (Default) | `ansible-playbook deploy_apm_oauth_as_rsa.yml` | DEMO/LAB environments |
+| Pre-Imported | `ansible-playbook deploy_apm_oauth_as_rsa.yml -e use_self_signed_cert=false` | Production |
+
+> **WARNING:** Self-signed certificates should NOT be used in production. For production:
+> 1. Import your organization's certificate via BIG-IP GUI or API
+> 2. Update `wildcard_cert.name` in `vars/solution10.yml` to match your cert name
+> 3. Set `use_self_signed_cert: false`
+
+**Prerequisites:**
+- Active Directory server accessible from BIG-IP
+- For production: Wildcard or domain certificate imported to BIG-IP
+
+**What Gets Deployed:**
+- **Self-Signed Certificate (if enabled):** Auto-generated RSA 2048-bit certificate
+- **JWK Configuration:** RS256 algorithm with certificate references
+- **OAuth Profile:** JWT tokens signed with RSA private key
+- **Access Policy:** Logon Page → AD Auth → AD Query → OAuth Authorization
+- **AS3 Application:** HTTPS virtual server with OAuth endpoints
+
+**Comparison with Solution 8 (HS256):**
+
+| Feature | Solution 8 | Solution 10 |
+|---------|------------|-------------|
+| Algorithm | HS256 (symmetric) | RS256 (asymmetric) |
+| Token Verification | Shared secret required | Public key from JWKS |
+| Certificate | Not required | Required |
+| Best For | Internal APIs | Public APIs, distributed systems |
+
+**Tag-Based Partial Deployment:**
+```bash
+# Deploy only AD infrastructure
+ansible-playbook deploy_apm_oauth_as_rsa.yml --tags aaa,ad
+
+# Deploy only certificate and JWK
+ansible-playbook deploy_apm_oauth_as_rsa.yml --tags certificate,jwk
+
+# Deploy only OAuth configuration
+ansible-playbook deploy_apm_oauth_as_rsa.yml --tags oauth
+
+# Deploy only access policy
+ansible-playbook deploy_apm_oauth_as_rsa.yml --tags policy
+
+# Deploy only AS3 application
+ansible-playbook deploy_apm_oauth_as_rsa.yml --tags application,as3
+```
+
 ### Deployment Options
 
 **Target Specific Host**
@@ -1563,6 +1676,30 @@ ansible-playbook delete_apm_oauth_rs.yml
 - CA certificate (if not used by other configurations)
 
 **Note:** This does NOT delete Solution 8 (OAuth AS) - delete that separately if needed.
+
+### Remove Solution 10 (OAuth AS with RS256)
+
+To remove Solution 10 deployment:
+
+```bash
+ansible-playbook delete_apm_oauth_as_rsa.yml -e confirm_delete=true
+```
+
+**Deletes:**
+- AS3 application tenant (solution10)
+- Access profile and access policy
+- All policy items and agents (logon page, AD auth, AD query, OAuth authz, endings)
+- All customization groups
+- OAuth profile
+- JWK configuration
+- AD AAA server and pool
+
+**NOT Deleted (may be used by other services):**
+- AD node (shared infrastructure)
+- CA certificate
+- Wildcard/self-signed certificate (may be used for other TLS services)
+
+**Note:** Certificates are preserved to avoid breaking other services. Delete manually if not needed.
 
 ### Automated Cleanup (No Confirmation)
 

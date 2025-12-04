@@ -2803,3 +2803,275 @@ JWK → JWT Config → OAuth Provider → JWT Provider List
 
 ---
 
+## Solution 10: OAuth Authorization Server with RS256 Implementation Details
+
+Solution 10 implements an OAuth Authorization Server using RS256 (RSA with SHA-256) asymmetric key signing, unlike Solution 8 which uses HS256 symmetric signing.
+
+### Key Differences from Solution 8 (HS256)
+
+| Feature | Solution 8 (HS256) | Solution 10 (RS256) |
+|---------|-------------------|---------------------|
+| Algorithm | Symmetric (shared secret) | Asymmetric (RSA key pair) |
+| JWK Configuration | `algType: "HS256"`, shared secret | `algType: "RS256"`, certificate + key references |
+| Token Verification | Requires shared secret | Uses public key from JWKS endpoint |
+| Certificate Required | No | Yes (self-signed or imported) |
+| JWKS Response | Returns shared secret info | Returns RSA public key (modulus, exponent) |
+
+### Self-Signed Certificate Workflow
+
+For DEMO/LAB environments, Solution 10 can auto-generate a self-signed certificate:
+
+```yaml
+# vars/solution10.yml
+use_self_signed_cert: true  # Enable auto-generation
+```
+
+**Certificate Generation Flow:**
+
+1. **Generate locally:** OpenSSL creates RSA 2048-bit key pair
+   ```bash
+   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+     -keyout /tmp/{cert_name}.key \
+     -out /tmp/{cert_name}.crt \
+     -subj "/C=US/ST=State/L=City/O=Organization/CN={dns_name}"
+   ```
+
+2. **Upload to BIG-IP:** Files transferred via REST API
+   ```http
+   POST /mgmt/shared/file-transfer/uploads/{cert_name}.key
+   POST /mgmt/shared/file-transfer/uploads/{cert_name}.crt
+   ```
+
+3. **Install key first:** Private key must be installed before certificate
+   ```http
+   POST /mgmt/tm/sys/crypto/key
+   {
+     "name": "{cert_name}",
+     "partition": "Common",
+     "sourcePath": "file:/var/config/rest/downloads/{cert_name}.key"
+   }
+   ```
+
+4. **Install certificate:** With key association
+   ```http
+   POST /mgmt/tm/sys/crypto/cert
+   {
+     "name": "{cert_name}",
+     "partition": "Common",
+     "commonName": "{dns_name}",
+     "sourcePath": "file:/var/config/rest/downloads/{cert_name}.crt",
+     "key": "/Common/{cert_name}"
+   }
+   ```
+
+> **WARNING:** Self-signed certificates should NOT be used in production. For production deployments, import a proper certificate from your organization's CA.
+
+### JWK Configuration for RS256
+
+Unlike HS256 which uses a shared secret, RS256 requires certificate references:
+
+**Postman:**
+```json
+{
+  "name": "{{vs1_name}}-jwk",
+  "algType": "RS256",
+  "keyType": "rsa",
+  "keyUse": "signing",
+  "cert": "/Common/{{wildcard_cert_name}}",
+  "certChain": "/Common/{{ca_cert_name}}",
+  "certKey": "/Common/{{wildcard_cert_name}}",
+  "includeX5c": "no",
+  "passphrase": "{{cert_passphrase}}"
+}
+```
+
+**Ansible (with conditional cert chain):**
+```yaml
+# For pre-imported certificates (with CA chain)
+- name: Build JWK config body (with cert chain)
+  set_fact:
+    jwk_body:
+      name: "{{ jwk_config.name }}"
+      algType: "RS256"
+      keyType: "rsa"
+      cert: "/Common/{{ wildcard_cert.name }}"
+      certChain: "/Common/{{ ca_cert.name }}"
+      certKey: "/Common/{{ wildcard_cert.name }}"
+      # ... other fields
+  when: not use_self_signed_cert
+
+# For self-signed certificates (no CA chain)
+- name: Build JWK config body (self-signed)
+  set_fact:
+    jwk_body:
+      name: "{{ jwk_config.name }}"
+      algType: "RS256"
+      keyType: "rsa"
+      cert: "/Common/{{ wildcard_cert.name }}"
+      certKey: "/Common/{{ wildcard_cert.name }}"
+      # NO certChain for self-signed
+  when: use_self_signed_cert
+```
+
+**Critical:** Self-signed certificates do NOT have a CA chain. Including `certChain` with a mismatched CA will cause:
+```
+01071ca4:3: Invalid certificate order within cert-chain (/Common/ca.acme.com)
+associated to JWK config (/Common/as-rsa-jwk)
+```
+
+### Certificate Prerequisites
+
+| Mode | Prerequisites | Configuration |
+|------|---------------|---------------|
+| Self-Signed | None (auto-generated) | `use_self_signed_cert: true` |
+| Pre-Imported | Certificate + Key imported to BIG-IP | `use_self_signed_cert: false` |
+
+**Importing Certificates to BIG-IP (for production):**
+
+Via GUI:
+- System > Certificate Management > Traffic Certificate Management > SSL Certificate List
+- Import both certificate and private key
+
+Via API:
+```http
+# Upload and install key
+POST /mgmt/shared/file-transfer/uploads/mycert.key
+POST /mgmt/tm/sys/crypto/key
+{
+  "name": "mycert",
+  "sourcePath": "file:/var/config/rest/downloads/mycert.key"
+}
+
+# Upload and install certificate
+POST /mgmt/shared/file-transfer/uploads/mycert.crt
+POST /mgmt/tm/sys/crypto/cert
+{
+  "name": "mycert",
+  "commonName": "*.example.com",
+  "sourcePath": "file:/var/config/rest/downloads/mycert.crt",
+  "key": "/Common/mycert"
+}
+```
+
+### OAuth Profile with RS256 Primary Key
+
+The OAuth profile references the RS256 JWK for token signing:
+
+```yaml
+oauth_profile:
+  name: "{{ vs1_name }}-oauth"
+  primaryKey: "/Common/{{ jwk_config.name }}"        # JWK for access tokens
+  idTokenPrimaryKey: "/Common/{{ jwk_config.name }}" # JWK for ID tokens
+  jwtToken: "enabled"
+  opaqueToken: "disabled"
+```
+
+### JWKS Endpoint Response
+
+When RS256 is configured, the `/f5-oauth2/v1/jwks` endpoint returns RSA public key components:
+
+```json
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "lab",
+      "n": "rQRpUpNgVvYWwm6x...",  // RSA modulus (base64url)
+      "e": "AQAB"                    // RSA public exponent (base64url)
+    }
+  ]
+}
+```
+
+OAuth clients can use this public key to verify JWT tokens without needing a shared secret.
+
+### AS3 Declaration with TLS
+
+Solution 10 uses AS3 TLS_Server and Certificate classes for proper HTTPS configuration:
+
+```yaml
+# Build TLS certificate reference
+tls_cert_config:
+  class: "Certificate"
+  certificate:
+    bigip: "/Common/{{ wildcard_cert.name }}"
+  privateKey:
+    bigip: "/Common/{{ wildcard_cert.name }}"
+
+# Build TLS server profile
+tls_server_config:
+  class: "TLS_Server"
+  certificates:
+    - certificate: "tlsserver_local_cert"
+
+# Build virtual server with TLS
+vs_config:
+  class: "Service_HTTPS"
+  virtualAddresses:
+    - "{{ as3_config.virtual_address }}"
+  virtualPort: 443
+  serverTLS: "{{ vs1_name }}-clientssl"
+  profileAccess:
+    bigip: "/Common/{{ access_profile.name }}"
+```
+
+### Common Errors and Solutions
+
+---
+
+**Error:** `File object by name (/Common/cert-name) is missing`
+
+**Cause:** Certificate not properly installed on BIG-IP.
+
+**Solution:**
+1. Verify key was installed first: `GET /mgmt/tm/sys/crypto/key/~Common~{cert_name}`
+2. Verify certificate exists: `GET /mgmt/tm/sys/crypto/cert/~Common~{cert_name}`
+3. Check installation used `sourcePath` not `from-local-file`
+
+---
+
+**Error:** `Invalid certificate order within cert-chain`
+
+**Cause:** Self-signed certificate configured with a CA chain reference.
+
+**Solution:** Do not include `certChain` when using self-signed certificates:
+```yaml
+# WRONG for self-signed
+certChain: "/Common/ca.acme.com"
+
+# CORRECT for self-signed
+# (omit certChain entirely)
+```
+
+---
+
+**Error:** `servicePort: should be integer`
+
+**Cause:** AS3 pool member servicePort passed as string instead of integer.
+
+**Solution:** Use literal integer, not Jinja2 expression:
+```yaml
+# WRONG
+servicePort: "{{ port | int }}"
+
+# CORRECT
+servicePort: 80
+```
+
+---
+
+### File Location Reference (Solution 10)
+
+| Component | File Path |
+|-----------|-----------|
+| Solution 10 playbook | `deploy_apm_oauth_as_rsa.yml` |
+| Solution 10 delete playbook | `delete_apm_oauth_as_rsa.yml` |
+| Solution 10 variables | `vars/solution10.yml` |
+| Access policy (Solution 10) | `tasks/access_policy_solution10.yml` |
+| Self-signed cert generation | `tasks/create_self_signed_cert_oauth.yml` |
+| Solution 10 source | [solution10-create.postman_collection.json](https://github.com/f5devcentral/access-solutions/blob/master/solution10/postman/solution10-create.postman_collection.json) |
+
+---
+
